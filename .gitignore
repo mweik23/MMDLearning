@@ -5,13 +5,13 @@ top_tagging_dset_Pnet/
 datasets_Lnet/
 datasets_Pnet100_Njets-1/
 datasets_Pnet100_Njets1000/
-data/top/
+data/top/*
 !data/top/.gitkeep
-data/qg/
+data/qg/*
 !data/qg/.gitkeep
-logs/top/
+logs/top/*
 !logs/top/.gitkeep
-logs/qg/
+logs/qg/*
 !logs/qg/.gitkeep
 our_data_Nobj15_Njets64000/
 our_data_Nobj30_Njets-1/
