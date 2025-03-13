@@ -1,0 +1,15 @@
+<<<<<<< HEAD
+=======
+top_tagging_dset_Pnet/
+>>>>>>> c22d00b (Updated .gitignore to exclude specific directories)
+datasets_Lnet/
+datasets_Pnet100_Njets-1/
+datasets_Pnet100_Njets1000/
+data/top/
+data/qg/
+logs/top/
+logs/qg/
+our_data_Nobj15_Njets64000/
+our_data_Nobj30_Njets-1/
+our_data_Nobj30_Njets128000
+top_tagging_dset_Pnet
