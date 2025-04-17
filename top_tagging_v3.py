@@ -61,8 +61,8 @@ parser.add_argument('--patience', type=int, default=10, metavar='N',
                     help='learning rate scheduler')
 parser.add_argument('--factor', type=float, default=0.1, metavar='N',
                     help='factor for LR scheduler if reduce')
-parser.add_argument('--pascal', action='store_true', default=False,
-                    help = 'run on pascal')
+parser.add_argument('--manual', action='store_true', default=False,
+                    help = 'run manually')
 parser.add_argument('--devices', type=int,  nargs='+', default=[0], metavar='N',
                     help='device numbers')
 #added this input for compatibility with ParticleNet
@@ -266,7 +266,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     world_size = int(os.environ["WORLD_SIZE"])
     
-    if args.pascal:
+    if args.manual:
         if len(args.devices) != world_size:
             devices = range(args.devices[0], args.devices[0]+world_size)
         else:
