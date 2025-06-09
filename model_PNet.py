@@ -123,8 +123,133 @@ class EdgeConvBlock(nn.Module):
 
         return self.sc_act(sc + fts)  # (N, C_out, P)
 
+class FullyConnected(nn.Module):
 
+    def __init__(self,
+                 input_dims=64,
+                 num_classes=None,
+                 fc_params=[(64, 0), (128, 0.1)],
+                 for_segmentation=False,
+                 for_inference=False,
+                 out_lyrs = [-1]):
+
+        self.for_inference = for_inference
+        self.for_segmentation = for_segmentation
+
+        super().__init__()
+        
+        fcs = nn.ModuleList()
+        for idx, layer_param in enumerate(fc_params):
+            channels, drop_rate = layer_param
+            if idx==0:
+                in_chn = input_dims
+            else:
+                in_chn = fc_params[idx-1][0]
+            if self.for_segmentation:
+                fcs.append(nn.Sequential(nn.Conv1d(in_chn, channels, kernel_size=1, bias=False),
+                                         nn.BatchNorm1d(channels), nn.ReLU(), nn.Dropout(drop_rate)))
+            else:
+                fcs.append(nn.Sequential(nn.Linear(in_chn, channels), nn.ReLU(), nn.Dropout(drop_rate)))
+        if num_classes is not None:
+            if self.for_segmentation:
+                fcs.append(nn.Conv1d(fc_params[-1][0], num_classes, kernel_size=1))
+            else:
+                fcs.append(nn.Linear(fc_params[-1][0], num_classes))
+        num_lyrs = len(fcs)
+        out_lyrs = [(num_lyrs+lyr) % num_lyrs for lyr in out_lyrs]
+        self.fc = nn.ModuleList([nn.Sequential(*fcs[:idx+1]) if i==0 else nn.Sequential(*fcs[idx[i-1]+1:idx+1]) for i, idx in enumerate(out_lyrs)])
+
+    def forward(self, in_feat):
+
+        output=[in_feat]
+        for part in self.fc:
+            output.append(part(output[-1]))
+        if self.for_inference:
+            output[-1] = torch.softmax(output[-1], dim=1)
+
+        return output
+    
 class ParticleNet(nn.Module):
+
+    def __init__(self,
+                 input_dims,
+                 num_classes,
+                 conv_params=[(7, (32, 32, 32)), (7, (64, 64, 64))],
+                 fc_params=[(128, 0.1)],
+                 use_fusion=True,
+                 use_fts_bn=True,
+                 use_counts=True,
+                 for_inference=False,
+                 for_segmentation=False,
+                 out_lyrs=[-1],
+                 **kwargs):
+        super(ParticleNet, self).__init__(**kwargs)
+        self.for_segmentation=for_segmentation
+        self.use_fts_bn = use_fts_bn
+        if self.use_fts_bn:
+            self.bn_fts = nn.BatchNorm1d(input_dims)
+
+        self.use_counts = use_counts
+
+        self.edge_convs = nn.ModuleList()
+        for idx, layer_param in enumerate(conv_params):
+            k, channels = layer_param
+            in_feat = input_dims if idx == 0 else conv_params[idx - 1][1][-1]
+            self.edge_convs.append(EdgeConvBlock(k=k, in_feat=in_feat, out_feats=channels, cpu_mode=for_inference))
+
+        self.use_fusion = use_fusion
+        if self.use_fusion:
+            in_chn = sum(x[-1] for _, x in conv_params)
+            out_chn = np.clip((in_chn // 128) * 128, 128, 1024)
+            self.fusion_block = nn.Sequential(nn.Conv1d(in_chn, out_chn, kernel_size=1, bias=False), nn.BatchNorm1d(out_chn), nn.ReLU())
+
+        self.fc_block = FullyConnected(num_classes=num_classes,
+                 fc_params=fc_params,
+                 for_segmentation=self.for_segmentation,
+                 for_inference=for_inference,
+                 out_lyrs = out_lyrs)
+        
+
+    def forward(self, points, features, mask=None):
+#         print('points:\n', points)
+#         print('features:\n', features)
+        if mask is None:
+            mask = (features.abs().sum(dim=1, keepdim=True) != 0)  # (N, 1, P)
+        points *= mask
+        features *= mask
+        coord_shift = (mask == 0) * 1e9
+        if self.use_counts:
+            counts = mask.float().sum(dim=-1)
+            counts = torch.max(counts, torch.ones_like(counts))  # >=1
+
+        if self.use_fts_bn:
+            fts = self.bn_fts(features) * mask
+        else:
+            fts = features
+        outputs = []
+        for idx, conv in enumerate(self.edge_convs):
+            pts = (points if idx == 0 else fts) + coord_shift
+            fts = conv(pts, fts) * mask
+            if self.use_fusion:
+                outputs.append(fts)
+        if self.use_fusion:
+            fts = self.fusion_block(torch.cat(outputs, dim=1)) * mask
+
+#         assert(((fts.abs().sum(dim=1, keepdim=True) != 0).float() - mask.float()).abs().sum().item() == 0)
+        
+        if self.for_segmentation:
+            x = fts
+        else:
+            if self.use_counts:
+                x = fts.sum(dim=-1) / counts  # divide by the real counts
+            else:
+                x = fts.mean(dim=-1)
+        
+        output = self.fc_block(x)
+        # print('output:\n', output)
+        return output
+
+class ParticleNetOld(nn.Module):
 
     def __init__(self,
                  input_dims,
@@ -139,7 +264,7 @@ class ParticleNet(nn.Module):
                  for_segmentation=False,
                  intermed_access=False,
                  **kwargs):
-        super(ParticleNet, self).__init__(**kwargs)
+        super(ParticleNetOld, self).__init__(**kwargs)
 
         self.use_fts_bn = use_fts_bn
         if self.use_fts_bn:
@@ -231,9 +356,9 @@ class ParticleNet(nn.Module):
             x = [x]
             for layer in self.fc:
                 x.append(layer(x[-1]))
-                output = x[-2:]
+            output = [x[-3], x[-1]]
         else:
-            output = [x, self.fc(x)]
+            output = [None, self.fc(x)]
         if self.for_inference:
             output[1] = torch.softmax(output[1], dim=1)
         # print('output:\n', output)

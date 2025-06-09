@@ -121,7 +121,7 @@ def run(epoch, loader, partition):
                          edge_mask=edge_mask, n_nodes=n_nodes)
         elif args.model=='ParticleNet' or args.model=='ParticleNet-Lite':
             batch_size, _, _ = data['label'].shape
-            _, pred = ddp_model(data['points'].to(local_rank, dtype), data['features'].to(local_rank, dtype), mask=data['label'].to(local_rank, dtype))
+            pred = ddp_model(data['points'].to(local_rank, dtype), data['features'].to(local_rank, dtype), mask=data['label'].to(local_rank, dtype))[-1]
         
         label = data['is_signal'].to(local_rank, dtype).long()
         #print('before model eval batch ', i)
@@ -369,12 +369,11 @@ if __name__ == "__main__":
                        c_weight = args.c_weight, no_batchnorm=args.no_batchnorm, no_layernorm=args.no_layernorm)
     else: 
         if args.model=='ParticleNet':
-            kwargs={'fc_params': [(256, args.dropout)], 'conv_params': [(16, (64, 64, 64)),(16, (128, 128, 128)),(16, (256, 256, 256))]}
+            kwargs={'fc_params': [(256, 0), (32, 0), (256, args.dropout)], 'conv_params': [(16, (64, 64, 64)),(16, (128, 128, 128)),(16, (256, 256, 256))]}
         elif args.model=='ParticleNet-Lite': 
-            kwargs={'fc_params': [(128, args.dropout)], 'conv_params': [(7, (32, 32, 32)),(17, (64, 64, 64))]}
+            kwargs={'fc_params': [(64, 0), (128, args.dropout)], 'conv_params': [(7, (32, 32, 32)),(7, (64, 64, 64))]}
 
         model = ParticleNet(7,
-        num_latent=args.n_latent,
         num_classes=2,
         conv_params=kwargs.get('conv_params', None),
         fc_params=kwargs.get('fc_params', None),
@@ -388,6 +387,8 @@ if __name__ == "__main__":
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
 
     model = model.to(local_rank)
+    print('model details')
+    print(model)
     ddp_model = DistributedDataParallel(model, device_ids=[local_rank])
 
    ### print model and data information

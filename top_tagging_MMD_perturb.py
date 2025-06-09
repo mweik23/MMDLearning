@@ -37,6 +37,8 @@ parser.add_argument('--datadir', nargs='+', default='./data/top', metavar='N',
                     help='data directories')
 parser.add_argument('--logdir', type=str, default='./logs/top', metavar='N',
                     help='folder to output logs')
+parser.add_argument('--pretrained', type=str, default='', metavar='N',
+                    help='directory of pretrained model')
 parser.add_argument('--dropout', type=float, default=0.2, metavar='N',
                     help='dropout probability')
 parser.add_argument('--lr', type=float, default=1e-3, metavar='N',
@@ -500,7 +502,7 @@ if __name__ == "__main__":
     model = model.to(local_rank)
     #need broadcast_buffers=True for multi GPU training
     ddp_model = DistributedDataParallel(model, broadcast_buffers=True, device_ids=[local_rank])
-
+    pretrained = torch.load(f"{args.logdir}/{args.pretrained}/best-val-model.pt", map_location=torch.cuda.set_device(local_rank))
     ### print model and data information
     if (rank == 0):
         pytorch_total_params = sum(p.numel() for p in ddp_model.parameters())
