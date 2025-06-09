@@ -12,7 +12,7 @@ class RBF(nn.Module):
     def get_bandwidth(self, L2_distances):
         if self.bandwidth is None:
             n_samples = L2_distances.shape[0]
-            bwidth = L2_distances.data.sum() / (n_samples ** 2 - n_samples)
+            bwidth = L2_distances.sum() / (n_samples ** 2 - n_samples) #L2_distances.data is typically there
             #print('bwidth = ', bwidth)
             return bwidth
 
