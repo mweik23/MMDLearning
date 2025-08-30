@@ -5,6 +5,8 @@ top_tagging_dset_Pnet/
 datasets_Lnet/
 datasets_Pnet100_Njets-1/
 datasets_Pnet100_Njets1000/
+log/
+test_results/
 data/top/*
 !data/top/.gitkeep
 data/qg/*
