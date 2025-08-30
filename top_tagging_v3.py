@@ -371,7 +371,7 @@ if __name__ == "__main__":
         if args.model=='ParticleNet':
             kwargs={'fc_params': [(256, 0), (32, 0), (256, args.dropout)], 'conv_params': [(16, (64, 64, 64)),(16, (128, 128, 128)),(16, (256, 256, 256))]}
         elif args.model=='ParticleNet-Lite': 
-            kwargs={'fc_params': [(64, 0), (128, args.dropout)], 'conv_params': [(7, (32, 32, 32)),(7, (64, 64, 64))]}
+            kwargs={'fc_params': [(128, 0), (32, 0), (128, args.dropout)], 'conv_params': [(7, (32, 32, 32)),(7, (64, 64, 64))]}
 
         model = ParticleNet(7,
         num_classes=2,
@@ -380,7 +380,8 @@ if __name__ == "__main__":
         use_fusion=kwargs.get('use_fusion', False),
         use_fts_bn=kwargs.get('use_fts_bn', True),
         use_counts=kwargs.get('use_counts', True),
-        for_inference=kwargs.get('for_inference', False))
+        for_inference=kwargs.get('for_inference', False),
+        out_lyrs=[1, -1])
     if not args.no_batchnorm:
         if rank==0:
             print('converting batchnorm to sync_batchnorm') #can turn into comment once I confirm this works

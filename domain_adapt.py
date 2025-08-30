@@ -12,7 +12,7 @@ class RBF(nn.Module):
     def get_bandwidth(self, L2_distances):
         if self.bandwidth is None:
             n_samples = L2_distances.shape[0]
-            bwidth = L2_distances.sum() / (n_samples ** 2 - n_samples) #L2_distances.data is typically there
+            bwidth = L2_distances.sum() / (n_samples ** 2 - n_samples) #L2_distances.sum() was L2_distances.data.sum() is typically there
             #print('bwidth = ', bwidth)
             return bwidth
 
@@ -41,9 +41,10 @@ class MMDLoss(nn.Module):
         #print('kernel: ', K)
         X_size = X.shape[0]
         Y_size = Y.shape[0]
-        XX = (1/(1-1/X_size))*(K[:X_size, :X_size].mean() - K[0, 0]/X_size)
+        K.fill_diagonal_(0)
+        XX = K[:X_size, :X_size].sum()/(X_size*(X_size-1))
         XY = K[:X_size, X_size:].mean()
-        YY = (1/(1-1/Y_size))*(K[X_size:, X_size:].mean() - K[0, 0]/Y_size)
+        YY = K[X_size:, X_size:].sum()/(Y_size*(Y_size-1))
         #print('memory of XX: ', XX.element_size())
         return XX - 2 * XY + YY
 

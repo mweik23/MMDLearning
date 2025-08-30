@@ -157,7 +157,7 @@ class FullyConnected(nn.Module):
                 fcs.append(nn.Linear(fc_params[-1][0], num_classes))
         num_lyrs = len(fcs)
         out_lyrs = [(num_lyrs+lyr) % num_lyrs for lyr in out_lyrs]
-        self.fc = nn.ModuleList([nn.Sequential(*fcs[:idx+1]) if i==0 else nn.Sequential(*fcs[idx[i-1]+1:idx+1]) for i, idx in enumerate(out_lyrs)])
+        self.fc = nn.ModuleList([nn.Sequential(*fcs[:idx+1]) if i==0 else nn.Sequential(*fcs[out_lyrs[i-1]+1:idx+1]) for i, idx in enumerate(out_lyrs)])
 
     def forward(self, in_feat):
 
@@ -167,7 +167,7 @@ class FullyConnected(nn.Module):
         if self.for_inference:
             output[-1] = torch.softmax(output[-1], dim=1)
 
-        return output
+        return output[1:]
     
 class ParticleNet(nn.Module):
 
