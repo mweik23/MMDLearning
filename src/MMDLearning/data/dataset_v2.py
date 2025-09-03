@@ -1,7 +1,7 @@
 import torch
 from torch.utils.data import DataLoader, ConcatDataset, Subset
 from torch.utils.data.distributed import DistributedSampler
-from . import collate_fn
+from collate import collate_fn, collate_sorted
 import numpy as np 
 import h5py, glob
 from . import JetDataset
@@ -25,9 +25,9 @@ def retrieve_dataloaders(datasets, batch_size, num_workers = 4, rank=None, num_r
         train_sampler = None
     # Construct PyTorch dataloaders from datasets
     if collate_config=='LorentzNet':
-        collate = lambda data: collate_fn(data, scale=1, add_beams=True, beam_mass=1)
+        collate = lambda data: collate_fn(data, scale=1, add_beams=True, beam_mass=1) #TODO: update to give a sorted batch
     elif collate_config=='ParticleNet' or collate_config=='ParticleNet-Lite':
-        collate=None
+        collate=collate_sorted
     dataloaders = {split: DataLoader(dataset,
                                      batch_size=batch_size if (split == 'train') else batch_size, # prevent CUDA memory exceeded
                                      sampler=train_sampler if (split == 'train') else DistributedSampler(dataset, shuffle=False, num_replicas=num_replicas, rank=rank),
@@ -40,14 +40,14 @@ def retrieve_dataloaders(datasets, batch_size, num_workers = 4, rank=None, num_r
 
     return train_sampler, dataloaders
 
-def initialize_datasets(datadir='./data', num_pts=None, is_source=None, rank=0, reg_params=None, model='ParticleNet'):
+def initialize_datasets(datadir='./data', num_pts=None, is_target=None, rank=0, reg_params=None, model='ParticleNet'):
     """
     Initialize datasets.
     """
     if type(datadir)==str:
         datadir = [datadir]
-    if np.isscalar(is_source) or is_source is None:
-        is_source=[is_source]
+    if np.isscalar(is_target) or is_target is None:
+        is_target=[is_target]
     if type(num_pts)==dict:
         num_pts = [num_pts]
     elif num_pts is None:
@@ -96,13 +96,13 @@ def initialize_datasets(datadir='./data', num_pts=None, is_source=None, rank=0, 
     for split in splits:
         num_pts_per_file[split] = []
         datasets[split] = []
-        for s, datafiles, nums in zip(is_source, datafiles_set, num_pts_per_file_set):
+        for t, datafiles, nums in zip(is_target, datafiles_set, num_pts_per_file_set):
             for file, n in zip(datafiles[split], nums[split]):
                 num_pts_per_file[split].append(n)
                 with h5py.File(file,'r') as f:
                     datasets[split].append({key: torch.from_numpy(val[:]) for key, val in f.items()})
-                if s is not None:
-                    datasets[split][-1]['is_source'] = s*torch.ones_like(datasets[split][-1]['Nobj'])
+                if t is not None:
+                    datasets[split][-1]['is_target'] = t*torch.ones_like(datasets[split][-1]['Nobj'])
                 if model=='ParticleNet' or model=='ParticleNet-Lite':
                     datasets[split][-1]['features'] = torch.cat((datasets[split][-1]['features'], datasets[split][-1]['points']), dim=-1)
                     #reshape the tensors

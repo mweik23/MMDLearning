@@ -1,42 +1,8 @@
 import torch
-import os, json, random, string
-import torch.distributed as dist
+import torch.nn as nn
+from torch.optim.lr_scheduler import _LRScheduler, ReduceLROnPlateau, ConstantLR, ExponentialLR, ChainedScheduler
 import numpy as np
-from torch.optim.lr_scheduler import _LRScheduler
-from torch.optim.lr_scheduler import ReduceLROnPlateau, ConstantLR, ExponentialLR, ChainedScheduler
-from torch import nn
-
-def makedir(path):
-    try:
-        os.makedirs(path)
-    except OSError:
-        pass
-
-def args_init(args, rank, world_size):
-    r''' Initialize seed and exp_name.
-    '''
-    if args.seed is None: # use random seed if not specified
-        args.seed = np.random.randint(100)
-    if args.exp_name == '': # use random strings if not specified
-        args.exp_name = ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
-    if (rank == 0): # master
-        print(args)
-        makedir(f"{args.logdir}/{args.exp_name}")
-        d = args.__dict__
-        d['world_size'] = world_size
-        with open(f"{args.logdir}/{args.exp_name}/args.json", 'w') as f:
-            json.dump(d, f, indent=4)
-
-def sum_reduce(num, device):
-    r''' Sum the tensor across the devices.
-    '''
-    if not torch.is_tensor(num):
-        rt = torch.tensor(num).to(device)
-    else:
-        rt = num.clone()
-    dist.all_reduce(rt, op=dist.ReduceOp.SUM)
-    return rt
-
+from sklearn.metrics import roc_auc_score, roc_curve
 
 
 class GradualWarmupScheduler(_LRScheduler):
@@ -128,10 +94,6 @@ class GradualWarmupScheduler(_LRScheduler):
         self.__dict__.update(state_dict)
         if after_scheduler_state:
             self.after_scheduler.load_state_dict(after_scheduler_state)
-
-
-from sklearn.metrics import roc_auc_score, roc_curve
-import numpy as np
 
 def buildROC(labels, score, targetEff=[0.3,0.5]):
     r''' ROC curve is a plot of the true positive rate (Sensitivity) in the function of the false positive rate

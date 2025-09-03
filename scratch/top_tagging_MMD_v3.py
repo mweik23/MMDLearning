@@ -1,9 +1,9 @@
-from top import dataset as dset
+from src import dataset as dset
 from models import psi, LorentzNet
 import torch
 from torch import nn, optim
 import argparse, json, time
-import utils
+import src
 import numpy as np
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
@@ -158,10 +158,10 @@ def display_status(res, num_batches, partition, epoch, batch_num, batch_size):
     running_MMD_loss = sum(res['MMD loss_arr'][-args.log_interval:])/len(res['MMD loss_arr'][-args.log_interval:])
     running_acc = sum(res['correct_arr'][-args.log_interval:])/(len(res['correct_arr'][-args.log_interval:])*batch_size)
     avg_time = res['time']/res['counter'] * batch_size
-    tmp_counter = utils.sum_reduce(res['counter'], device = local_rank)
+    tmp_counter = src.sum_reduce(res['counter'], device = local_rank)
     #tmp_BCE_loss = utils.sum_reduce(res['BCE loss'], device = local_rank) / tmp_counter
     #tmp_MMD_loss = utils.sum_reduce(res['MMD loss'], device = local_rank) / tmp_counter
-    tmp_acc = utils.sum_reduce(res['correct'], device = local_rank) / tmp_counter
+    tmp_acc = src.sum_reduce(res['correct'], device = local_rank) / tmp_counter
     if (rank == 0):
         print('domain: ', res['domain'])
         print(">> %s \t Epoch %d/%d \t Batch %d/%d \t BCE Loss %.4f \t MMD Loss %.4f \t Running Acc %.3f \t Total Acc %.3f \t Avg Batch Time %.4f" %
@@ -173,8 +173,8 @@ def gather_preds(res):
     return torch.cat(pred).cpu()
 
 def get_metric(pred, res):
-    fpr, tpr, thres, eB, eS  = utils.buildROC(pred[...,0], pred[...,2])
-    auc = utils.roc_auc_score(pred[...,0], pred[...,2])
+    fpr, tpr, thres, eB, eS  = src.buildROC(pred[...,0], pred[...,2])
+    auc = src.roc_auc_score(pred[...,0], pred[...,2])
     metric = {'domain': res['domain'],'test_BCE_loss': res['BCE loss'], 'test_MMD_loss': res['MMD loss'], 'test_acc': res['acc'],
                   'test_auc': auc, 'test_1/eB_0.3':1./eB[0],'test_1/eB_0.5':1./eB[1], 'fpr': fpr, 'tpr': tpr}
     return metric
@@ -256,10 +256,10 @@ def run(epoch, loaders, partition):
             r['score'] = torch.cat(r['score'])
             r['score'] = torch.cat((r['label'], r['score']),dim=-1)
     for r in res:
-        r['counter'] = utils.sum_reduce(r['counter'], device = local_rank).item()
-        r['BCE loss'] = utils.sum_reduce(r['BCE loss'], device = local_rank).item() / r['counter']
-        r['MMD loss'] = utils.sum_reduce(r['MMD loss'], device = local_rank).item() / r['counter']
-        r['acc'] = utils.sum_reduce(r['correct'], device = local_rank).item() / r['counter']
+        r['counter'] = src.sum_reduce(r['counter'], device = local_rank).item()
+        r['BCE loss'] = src.sum_reduce(r['BCE loss'], device = local_rank).item() / r['counter']
+        r['MMD loss'] = src.sum_reduce(r['MMD loss'], device = local_rank).item() / r['counter']
+        r['acc'] = src.sum_reduce(r['correct'], device = local_rank).item() / r['counter']
     return res
 
 def train(res):
@@ -400,7 +400,7 @@ if __name__ == "__main__":
         local_rank = rank - gpus_per_node * (rank // gpus_per_node)
         num_workers = int(os.environ["SLURM_CPUS_PER_TASK"])
     
-    utils.args_init(args, rank, world_size)
+    src.args_init(args, rank, world_size)
     if rank==0:
         print('world size: ', world_size)
     ### set random seed
@@ -522,7 +522,7 @@ if __name__ == "__main__":
         start_epoch=0
 
     
-    mmd_sched = utils.MMDScheduler(args.MMDturnon_epoch, args.MMDturnon_width)
+    mmd_sched = src.MMDScheduler(args.MMDturnon_epoch, args.MMDturnon_width)
     
     ### loss function
     bce = nn.CrossEntropyLoss()

@@ -230,3 +230,13 @@ def collate_fn(data, scale=1., nobj=None, edge_features=[], add_beams=False, bea
     data['edges'] = edges
 
     return data
+
+def collate_sorted(batch):
+    # batch: list of dicts with keys: x, y, domain  (domain ∈ {0=src,1=tgt})
+    variables = {k: torch.stack([b[k] for b in batch]) for k in batch[0]}
+    # src first
+    perm = torch.argsort(variables['is_target'])         # 0s then 1s
+    n_s = int((variables['is_target'] == 0).sum().item())
+    out = {k: variables[k][perm] for k in variables}
+    out['n_s'] = n_s
+    return out
