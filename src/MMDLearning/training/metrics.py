@@ -1,0 +1,112 @@
+import torch
+from pathlib import Path
+SRC_DIR = (Path(__file__).parent).resolve()
+import sys
+sys.path.append(str(SRC_DIR))
+import MMDLearning.utils.distributed as dist
+from collections import deque
+from dataclasses import dataclass
+import time
+
+def get_correct(pred, label):
+        predict = pred.max(1).indices
+        correct = torch.sum(predict == label).item()
+        return correct
+    
+#masks controls the number of domains to calculate metrics for
+def get_batch_metrics(batch, loss_fns, use_tar_labels=False, domains=['Source']):
+    out = {d: {} for d in domains}
+    for d in domains:
+        out[d]['batch_size'] = batch[d]['label'].size(0)
+        out[d]['correct'] = get_correct(batch[d]['pred'], batch[d]['label'])
+        out[d]['BCE loss'] = loss_fns['bce'](batch[d]['pred'], batch[d]['label'])
+    if use_tar_labels:
+        mmd_val = (loss_fns['mmd'](batch['Source']['encoded'][batch['Source']['label']==0], batch['Target']['encoded'][batch['Target']['label']==0]) 
+                   + loss_fns['mmd'](batch['Source']['encoded'][batch['Source']['label']==1], batch['Target']['encoded'][batch['Target']['label']==1]))/2
+    else:
+        mmd_val = loss_fns['mmd'](batch['Source']['encoded'], batch['Target']['encoded'])
+    return out, mmd_val
+
+@dataclass
+class RunningStats:
+    """Keeps a rolling window for display AND full-epoch totals (no DDP)."""
+    window: int
+    domain: str = 'Source'  # for display purposes only
+
+    def __post_init__(self):
+        w = max(1, int(self.window))
+        self._bce = deque(maxlen=w)
+        self._mmd = deque(maxlen=w)
+        self._correct = deque(maxlen=w)
+        self._batch_sizes = deque(maxlen=w)
+        self._initial_time = time.time()
+        self._last_time = self._initial_time
+        self._seen_batches = 0
+        self._last_seen_batches = 0
+        self.reset_epoch()
+
+    # ---- per-batch update ----
+    def update(self, *, bce: float, mmd: float, correct: int, batch_size: int):
+        # window buffers
+        self._bce.append(float(bce))
+        self._mmd.append(float(mmd))
+        self._correct.append(int(correct))
+        self._batch_sizes.append(int(batch_size))
+        self._seen_batches += 1
+        # epoch totals
+        self.epoch_bce_sum += float(bce) * int(batch_size)   # sample-weighted
+        self.epoch_mmd_sum += float(mmd) * int(batch_size)   # sample-weighted
+        self.epoch_correct += int(correct)
+        self.epoch_count   += int(batch_size)
+
+    def avg_batch_time(self) -> float:
+        cur_time = time.time()
+        
+        # time since last call
+        elapsed = cur_time-self._last_time
+        self._last_time = cur_time
+        # batches since last call
+        num_batches = self._seen_batches - self._last_seen_batches
+        self._last_seen_batches = self._seen_batches
+        return elapsed / max(1, num_batches)
+
+    # ---- windowed properties (for periodic display) ----
+    @property
+    def running_bce(self) -> float:
+        bs = sum(self._batch_sizes)
+        return (sum(self._bce[i] * self._batch_sizes[i] for i in range(len(self._bce))) / max(1, bs)) if bs else 0.0
+
+    @property
+    def running_mmd(self) -> float:
+        bs = sum(self._batch_sizes)
+        return (sum(self._mmd[i] * self._batch_sizes[i] for i in range(len(self._mmd))) / max(1, bs)) if bs else 0.0
+
+    @property
+    def running_acc(self) -> float:
+        bs = sum(self._batch_sizes)
+        return (sum(self._correct) / max(1, bs)) if bs else 0.0
+
+    # ---- epoch aggregates (local, pre-DDP) ----
+    def epoch_loss_avgs(self) -> tuple[float, float]:
+        """Return (bce_avg, mmd_avg) weighted by samples across the whole epoch (local rank only)."""
+        if self.epoch_count == 0:
+            return 0.0, 0.0
+        return self.epoch_bce_sum / self.epoch_count, self.epoch_mmd_sum / self.epoch_count
+
+    def epoch_accuracy(self) -> float:
+        return (self.epoch_correct / self.epoch_count) if self.epoch_count else 0.0
+    
+    def epoch_time(self) -> float:
+        """Return the total time elapsed since the start of the epoch."""
+        return time.time() - self._initial_time
+
+    def reset_epoch(self):
+        self.epoch_bce_sum = 0.0
+        self.epoch_mmd_sum = 0.0
+        self.epoch_correct = 0
+        self.epoch_count   = 0
+        self._bce.clear(); self._mmd.clear(); self._correct.clear(); self._batch_sizes.clear()
+        self._initial_time = time.time()
+        self._last_time = self._initial_time 
+        self._seen_batches = 0
+        self._last_snap_batches = self._seen_batches

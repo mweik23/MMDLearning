@@ -1,8 +1,8 @@
-from top import dataset_v2 as dset
+from src import dataset_v2 as dset
 import torch
 from torch import nn, optim
 import argparse, json, time
-import utils
+import src
 import numpy as np
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
@@ -155,10 +155,10 @@ def display_status(res, num_batches, partition, epoch, batch_num, batch_size):
     running_MMD_loss = sum(res['MMD loss_arr'][-args.log_interval:])/len(res['MMD loss_arr'][-args.log_interval:])
     running_acc = sum(res['correct_arr'][-args.log_interval:])/(len(res['correct_arr'][-args.log_interval:])*batch_size)
     avg_time = res['time']/res['counter'] * batch_size
-    tmp_counter = utils.sum_reduce(res['counter'], device = local_rank)
+    tmp_counter = src.sum_reduce(res['counter'], device = local_rank)
     #tmp_BCE_loss = utils.sum_reduce(res['BCE loss'], device = local_rank) / tmp_counter
     #tmp_MMD_loss = utils.sum_reduce(res['MMD loss'], device = local_rank) / tmp_counter
-    tmp_acc = utils.sum_reduce(res['correct'], device = local_rank) / tmp_counter
+    tmp_acc = src.sum_reduce(res['correct'], device = local_rank) / tmp_counter
     if (rank == 0):
         print('domain: ', res['domain'])
         print(">> %s \t Epoch %d/%d \t Batch %d/%d \t BCE Loss %.4f \t MMD Loss %.4f \t Running Acc %.3f \t Total Acc %.3f \t Avg Batch Time %.4f" %
@@ -170,8 +170,8 @@ def gather_preds(res):
     return torch.cat(pred).cpu()
 
 def get_metric(pred, res):
-    fpr, tpr, thres, eB, eS  = utils.buildROC(pred[...,0], pred[...,2])
-    auc = utils.roc_auc_score(pred[...,0], pred[...,2])
+    fpr, tpr, thres, eB, eS  = src.buildROC(pred[...,0], pred[...,2])
+    auc = src.roc_auc_score(pred[...,0], pred[...,2])
     metric = {'domain': res['domain'],'test_BCE_loss': res['BCE loss'], 'test_MMD_loss': res['MMD loss'], 'test_acc': res['acc'],
                   'test_auc': auc, 'test_1/eB_0.3':1./eB[0],'test_1/eB_0.5':1./eB[1],  'fpr': fpr, 'tpr': tpr}
     return metric
@@ -276,10 +276,10 @@ def run(epoch, loader, partition):
             r['score'] = torch.cat(r['score'])
             r['score'] = torch.cat((r['label'], r['score']),dim=-1)
     for r in res:
-        r['counter'] = utils.sum_reduce(r['counter'], device = local_rank).item()
-        r['BCE loss'] = utils.sum_reduce(r['BCE loss'], device = local_rank).item() / r['counter']
-        r['MMD loss'] = utils.sum_reduce(r['MMD loss'], device = local_rank).item() / r['counter']
-        r['acc'] = utils.sum_reduce(r['correct'], device = local_rank).item() / r['counter']
+        r['counter'] = src.sum_reduce(r['counter'], device = local_rank).item()
+        r['BCE loss'] = src.sum_reduce(r['BCE loss'], device = local_rank).item() / r['counter']
+        r['MMD loss'] = src.sum_reduce(r['MMD loss'], device = local_rank).item() / r['counter']
+        r['acc'] = src.sum_reduce(r['correct'], device = local_rank).item() / r['counter']
     print(r['counter'])
     return res
 
@@ -395,7 +395,7 @@ if __name__ == "__main__":
         local_rank = rank - gpus_per_node * (rank // gpus_per_node)
         num_workers = int(os.environ["SLURM_CPUS_PER_TASK"])
     
-    utils.args_init(args, rank, world_size)
+    src.args_init(args, rank, world_size)
 
     #added for compatibilty with ParticleNet
     #######################################
@@ -514,7 +514,7 @@ if __name__ == "__main__":
    ### lr scheduler
     if args.lr_scheduler=='CosineAnealing':
         base_scheduler = CosineAnnealingWarmRestarts(optimizer, restart_epoch, 2, verbose = False)
-        lr_scheduler = utils.GradualWarmupScheduler(optimizer, multiplier=1,
+        lr_scheduler = src.GradualWarmupScheduler(optimizer, multiplier=1,
                                                 warmup_epoch=args.warmup_epochs,
                                                 after_scheduler=base_scheduler) ## warmup
     
@@ -533,12 +533,12 @@ if __name__ == "__main__":
         for ep in epochs_main:
             epochs.append([e+args.warmup_epochs for e in ep])
         schedule_types = ['linear', 'linear', 'linear', 'exp']
-        pn_lambda = utils.ParticleNetLambda(factors, epochs, schedule_types)
+        pn_lambda = src.ParticleNetLambda(factors, epochs, schedule_types)
         lr_scheduler = LambdaLR(optimizer, pn_lambda)
     else:
         print(args.lr_scheduler + " is not a valid learning rate scheduler")
     
-    mmd_sched = utils.MMDScheduler(args.MMDturnon_epoch, args.MMDturnon_width)
+    mmd_sched = src.MMDScheduler(args.MMDturnon_epoch, args.MMDturnon_width)
     ### loss function
     bce = nn.CrossEntropyLoss()
     mmd = da.MMDLoss(kernel=da.RBF(n_kernels=args.n_kernels, device=local_rank))

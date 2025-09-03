@@ -1,8 +1,8 @@
-from top import dataset_v2 as dset
+from src import dataset_v2 as dset
 import torch
 from torch import nn, optim
 import argparse, json, time
-import utils
+import src
 import numpy as np
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
@@ -176,33 +176,6 @@ def load_ckp(checkpoint_fpath, model, optimizer=None):
         optimizer.load_state_dict(checkpoint['optimizer'])
     return checkpoint['epoch']
 
-def get_correct(pred, label):
-    predict = pred.max(1).indices
-    correct = torch.sum(predict == label).item()
-    return correct
-def calc_BCE(res, pred, label):
-    batch_size = pred.size(dim=0) #keep in mind this is the batch_size of only the dataset that is passed into this function
-    correct = get_correct(pred, label)
-    loss_BCE = bce(pred, label)
-    res['counter'] += batch_size
-    res['correct'] += correct
-    res['BCE loss'] += loss_BCE.item() * batch_size
-    res['BCE loss_arr'].append(loss_BCE.item())
-    res['correct_arr'].append(correct)
-    return loss_BCE
-def display_status(res, num_batches, partition, epoch, batch_num, batch_size):
-    running_BCE_loss = sum(res['BCE loss_arr'][-args.log_interval:])/len(res['BCE loss_arr'][-args.log_interval:])
-    running_MMD_loss = sum(res['MMD loss_arr'][-args.log_interval:])/len(res['MMD loss_arr'][-args.log_interval:])
-    running_acc = sum(res['correct_arr'][-args.log_interval:])/(len(res['correct_arr'][-args.log_interval:])*batch_size)
-    avg_time = res['time']/res['counter'] * batch_size
-    tmp_counter = utils.sum_reduce(res['counter'], device = local_rank)
-    #tmp_BCE_loss = utils.sum_reduce(res['BCE loss'], device = local_rank) / tmp_counter
-    #tmp_MMD_loss = utils.sum_reduce(res['MMD loss'], device = local_rank) / tmp_counter
-    tmp_acc = utils.sum_reduce(res['correct'], device = local_rank) / tmp_counter
-    if (rank == 0):
-        #print('domain: ', res['domain'])
-        print(">> %s (%s): \t Epoch %d/%d \t Batch %d/%d \t BCE Loss %.4f \t MMD Loss %.4f \t Running Acc %.3f \t Total Acc %.3f \t Avg Batch Time %.4f" %
-                (partition, res['domain'], epoch, args.epochs+start_epoch-1, batch_num, num_batches, running_BCE_loss, running_MMD_loss,  running_acc, tmp_acc, avg_time))
 
 def gather_scores(scores):
     pred = [torch.zeros_like(scores) for _ in range(dist.get_world_size())]
@@ -213,8 +186,8 @@ def gather_preds(res):
     return gather_scores(res['score'])
 
 def get_metric(pred, res):
-    fpr, tpr, thres, eB, eS  = utils.buildROC(pred[...,0], pred[...,2])
-    auc = utils.roc_auc_score(pred[...,0], pred[...,2])
+    fpr, tpr, thres, eB, eS  = src.buildROC(pred[...,0], pred[...,2])
+    auc = src.roc_auc_score(pred[...,0], pred[...,2])
     metric = {'domain': res['domain'],'test_BCE_loss': res['BCE loss'], 'test_MMD_loss': res['MMD loss'], 'test_acc': res['acc'],
                   'test_auc': auc, 'test_1/eB_0.3':1./eB[0],'test_1/eB_0.5':1./eB[1],  'fpr': fpr, 'tpr': tpr}
     return metric
@@ -236,267 +209,7 @@ def get_mmd_floor(loader, quantiles=[0.5, 0.9]):
     mmd_med, mmd_upper = torch.quantile(mmd_floor_dist, torch.tensor(quantiles, device=mmd_floor_dist.device, dtype=torch.float32))
     return mmd_med, mmd_upper
 
-def run(epoch, loader, partition):
-    lambda_adjust = loss_stats['lambda_adjust']
-    if partition == 'train':
-        train_sampler.set_epoch(epoch)
-        ddp_model.train()
-        if args.bn_eval:
-            bn_eval(ddp_model)
-    else:
-        ddp_model.eval()
 
-    res = [{'domain': 'Source', 'time':0, 'correct':0, 'BCE loss': 0, 'MMD loss': 0, 'counter': 0, 'acc': 0,
-           'BCE loss_arr':[], 'MMD loss_arr':[], 'correct_arr':[],'label':[],'score':[]}]
-    if partition=='test':
-        res = [deepcopy(res[0]), deepcopy(res[0])]
-        res[1]['domain']= 'Target'
-    tik = time.time()
-    loader_length = len(loader)
-    #print(partition, loader_lengths)
-    #need to make prediction for source and target data
-    for i, data in enumerate(loader):
-        if partition == 'train':
-            optimizer.zero_grad()
-        #print('start batch')
-        #os.system('nvidia-smi')
-        #calculate prediction for target and source but only keep labels for the source data
-        source_tar_mask = [data['is_source']==s for s in is_source]
-        batch_sizes = [torch.sum(s) for s in source_tar_mask]
-        #print('signal fractions: ', [torch.sum(data['is_signal'][s])/len(data['is_signal'][s]) for s in source_tar_mask])
-        batch_size_avg = (sum(batch_sizes)/2).to(local_rank)
-        #os.system('nvidia-smi')
-        if args.model=='LorentzNet':
-            batch_size, n_nodes, _ = data['Pmu'].size()
-            atom_positions = data['Pmu'].view(batch_size * n_nodes, -1).to(local_rank, dtype)
-            atom_mask = data['atom_mask'].view(batch_size * n_nodes, -1).to(local_rank)
-            edge_mask = data['edge_mask'].reshape(batch_size * n_nodes * n_nodes, -1).to(local_rank)
-            nodes = data['nodes'].view(batch_size * n_nodes, -1).to(local_rank, dtype)
-            nodes = psi(nodes)
-            edges = [a.to(local_rank) for a in data['edges']]
-            #torch.cuda.memory_summary()
-            pred, mmd_in = ddp_model(scalars=nodes, x=atom_positions, edges=edges, node_mask=atom_mask,
-                                edge_mask=edge_mask, n_nodes=n_nodes)
-        elif args.model=='ParticleNet' or args.model=='ParticleNet-Lite':
-            batch_size, _, _ = data['label'].shape
-            mmd_in, pred = ddp_model(data['points'].to(local_rank, dtype), data['features'].to(local_rank, dtype), mask=data['label'].to(local_rank, dtype))
-        #print('pred size', pred.element_size()*pred.nelement())
-        label = data['is_signal'].to(local_rank, dtype).long()
-        #print('after pred batch ', i)
-        #os.system('nvidia-smi')
-        
-        if partition == 'valid':
-            for j, l in enumerate(val_logits['last']):
-                l.append(pred[source_tar_mask[j]].detach())
-        
-        if partition =='test':
-            score = torch.nn.functional.softmax(pred, dim = -1)
-            for r, s in zip(res, source_tar_mask):
-                r['label'].append(label[s].detach())
-                r['score'].append(score[s].detach())
-        
-        #note the method calc_BCE() also updates the res variable
-        #loss_BCE = [calc_BCE(res[i], preds[i], l) for i, l in enumerate(labels)]
-        loss_BCE = [calc_BCE(r, pred[source_tar_mask[j]] , label[source_tar_mask[j]]) for j, r in enumerate(res)]
-        #print('memory of bce loss: ', loss_BCE[0].element_size() * loss_BCE[0].nelement())
-        #os.system('nvidia-smi')
-        #MMD_value = args.MMD_coef*mmd(pred[source_tar_mask[0]], pred[source_tar_mask[1]]) #still contains MMD_coef
-        #loss_MMD = mmd_sched(epoch)*MMD_value
-        MMD_scale = 1 if partition=='test' else mmd_sched(epoch-start_epoch)
-        mmd_in = [mmd_in[s] for s in source_tar_mask]
-        #TODO: setup the use labels case for adjustable mmd coef
-        if args.use_tar_labels:
-            is_signal = [label[s]==1 for s in source_tar_mask]
-            is_back = [torch.logical_not(s) for s in is_signal]
-            loss_MMD = MMD_scale*args.MMD_coef*(mmd(mmd_in[0][is_signal[0]], mmd_in[1][is_signal[1]]) + mmd(mmd_in[0][is_back[0]], mmd_in[1][is_back[1]]))/2
-        else:
-            MMD_val = mmd(mmd_in[0], mmd_in[1])
-            #print('MMD_val: ', MMD_val)
-            loss_MMD = lambda_adjust(MMD_val)*MMD_scale*args.MMD_frac*MMD_val*loss_stats['init_BCE']/loss_stats['init_MMD']
-        #print('memory of mmd loss: ', loss_MMD.element_size() * loss_MMD.nelement())
-        #print(f'loss MMD: {loss_MMD}')
-
-        #losses = [l + loss_MMD for l in loss_BCE]
-
-        if partition == 'train':
-            #print('loss size: ', (loss_BCE[0]+loss_MMD).element_size())
-            (loss_BCE[0] + loss_MMD).backward()
-            #print('loss.backward() complete')
-            optimizer.step()
-            #print('optimizer.step() complete')
-
-        elapsed = time.time() - tik
-        for r in res:
-            r['time'] = elapsed
-            r['MMD loss'] += (loss_MMD/MMD_scale).detach().item() * args.batch_size*(batch_size_avg/(args.batch_size))**2
-            r['MMD loss_arr'].append((loss_MMD/MMD_scale).detach().item())
-        if i != 0 and i % args.log_interval == 0:
-            #TODO check if this should be batch_sizes[0] or args.batch_size
-            display_status(res[0], loader_length, partition, epoch, i, batch_size_avg)
-            if partition=='test':
-                display_status(res[1], loader_length, partition, epoch, i, batch_size_avg)
-        #print('end of batch')
-        #print(os.system('nvidia-smi'))
-    torch.cuda.empty_cache() #can put this in the batch loop to free memory at the end of each batch but it slows things down
-    # ---------- reduce -----------
-    
-    if partition == 'valid':
-        for j in range(len(val_logits['last'])):
-            val_logits['last'][j] = torch.cat(val_logits['last'][j], dim=0)
-    
-    if partition == 'test':
-        for r in res:
-            r['label'] = torch.cat(r['label']).unsqueeze(-1)
-            r['score'] = torch.cat(r['score'])
-            r['score'] = torch.cat((r['label'], r['score']),dim=-1)
-    for r in res:
-        r['counter'] = utils.sum_reduce(r['counter'], device = local_rank).item()
-        r['BCE loss'] = utils.sum_reduce(r['BCE loss'], device = local_rank).item() / r['counter']
-        r['MMD loss'] = utils.sum_reduce(r['MMD loss'], device = local_rank).item() / r['counter']
-        r['acc'] = utils.sum_reduce(r['correct'], device = local_rank).item() / r['counter']
-    print(r['counter'])
-    return res
-
-def train(res):
-    #start with a validation run if starting with a pretrained model
-    print('Learning rates (before val): ', [g['lr'] for g in optimizer.param_groups])
-    if args.pretrained !='':
-        with torch.no_grad():
-            val_res = run(start_epoch-1, dataloaders['valid'], partition='valid')[0]
-        val_logits['init'] = [gather_scores(l) for l in val_logits['last']]
-        val_logits['best'] = deepcopy(val_logits['init'])
-        if (rank == 0): # only master process save
-            is_best=False
-            if args.MMD_frac==0:
-                loss_stats['init_MMD'] = 1
-            loss_stats['init_MMD'] = val_res['MMD loss']*loss_stats['init_MMD']/loss_stats['init_BCE']/args.MMD_frac
-            loss_stats['init_BCE'] = val_res['BCE loss']
-            print('loss stats: ', loss_stats)
-            res['val_time'].append(val_res['time'])
-            res['val_BCE_loss'].append(val_res['BCE loss'])
-            res['val_MMD_loss'].append(args.MMD_frac*val_res['BCE loss'])
-            res['val_acc'].append(val_res['acc'])
-            res['epochs'].append(start_epoch-1)
-            ## save best model (minimum BCE + MMD with the MMD_coef only - no epoch dependent coefs) 
-            val_loss = val_res['BCE loss'] + res['val_MMD_loss'][-1]
-            if val_loss < res['best_val']:
-                is_best=True
-                res['best_val'] = val_loss
-                res['best_epoch'] = start_epoch-1
-            print("Val BCE loss: %.4f \t Val MMD loss: %.4f \t  Val acc: %.4f" % (val_res['BCE loss'], val_res['MMD loss'], val_res['acc']))
-            print("Best val loss: %.4f at epoch %d." % (res['best_val'],  res['best_epoch']))
-            res['initial val MMD'] = loss_stats['init_MMD']
-            res['initial val BCE'] = loss_stats['init_BCE']
-
-
-    ### training and validation
-    train_sampler.set_epoch(start_epoch-1)
-    for epoch in range(start_epoch, start_epoch+args.epochs):
-        #percentiles = get_mmd_floor(ddp_model, data1, data2)
-        is_best=False
-        if args.mmd_interval != -1:
-            if (epoch-start_epoch) % args.mmd_interval == 0:
-                with torch.no_grad():
-                    quantiles =[0.5, 0.975]
-                    mmd_med, mmd_upper = get_mmd_floor(dataloaders['train'], quantiles=quantiles)
-                    print('MMD quantile ', quantiles[0], ': ',  mmd_med)
-                    print('MMD quantile ', quantiles[1], ': ',  mmd_upper)
-                lambda_adjust = utils.LambdaAdjust(2*mmd_upper, 2*(mmd_upper-mmd_med)**(-1))
-                loss_stats['lambda_adjust'] = lambda_adjust
-        print('Learning rate: ', [g['lr'] for g in optimizer.param_groups])
-        train_res = run(epoch, dataloaders['train'], partition='train')[0]
-        print("Time: train: %.2f \t Train BCE loss %.4f \t Train MMD loss %.4f \t Train acc: %.4f" % (train_res['time'], train_res['BCE loss'], train_res['MMD loss'], train_res['acc']))
-        if epoch % args.val_interval == 0:
-            val_logits['last'] = [[], []]
-            with torch.no_grad():
-                val_res = run(epoch, dataloaders['valid'], partition='valid')[0]
-            val_loss = val_res['BCE loss'] + val_res['MMD loss']
-            if (rank == 0): # only master process save
-                res['lr'].append([g['lr'] for g in optimizer.param_groups])
-                res['train_time'].append(train_res['time'])
-                res['val_time'].append(val_res['time'])
-                res['train_BCE_loss'].append(train_res['BCE loss'])
-                res['train_MMD_loss'].append(train_res['MMD loss'])
-                res['train_acc'].append(train_res['acc'])
-                res['val_BCE_loss'].append(val_res['BCE loss'])
-                res['val_MMD_loss'].append(val_res['MMD loss'])
-                res['val_acc'].append(val_res['acc'])
-                res['epochs'].append(epoch)
-                res['val_tot_loss'].append(val_loss)
-                if val_loss < res['best_val']:
-                    is_best=True
-                    val_logits['best'] = [gather_scores(l) for l in val_logits['last']]
-                    res['best_val'] = val_loss
-                    res['best_epoch'] = epoch
-                checkpoint = {'epoch': epoch + 1, 'state_dict': ddp_model.state_dict(), 'optimizer': optimizer.state_dict()}
-                save_ckp(checkpoint, is_best, args.logdir, args.exp_name, epoch)
-                print("Epoch %d/%d finished." % (epoch, start_epoch+args.epochs-1))
-                print("Train time: %.2f \t Val time %.2f" % (train_res['time'], val_res['time']))
-                print("Train BCE loss %.4f \t Train MMD loss %.4f \t Train acc: %.4f" % (train_res['BCE loss'], train_res['MMD loss'], train_res['acc']))
-                print("Val BCE loss: %.4f \t Val MMD loss: %.4f \t  Val acc: %.4f" % (val_res['BCE loss'], val_res['MMD loss'], val_res['acc']))
-                print("Best val loss: %.4f at epoch %d." % (res['best_val'],  res['best_epoch']))
-
-                json_object = json.dumps(res, indent=4)
-                with open(f"{args.logdir}/{args.exp_name}/train-result.json", "w") as outfile:
-                    outfile.write(json_object)
-        #print('DEBUG: ', args.lr_scheduler)
-        ## adjust learning rate
-        if args.lr_scheduler=='Reduce':
-            lr_scheduler.step(val_loss)
-        elif args.lr_scheduler=='CosineAnealing':
-            ## adjust learning rate
-            if (epoch < 31*int(round(1/ratio**(1/2)))):
-                lr_scheduler.step(metrics=val_res['BCE loss'] + val_res['MMD loss'])
-            else:
-                for g in optimizer.param_groups:
-                    g['lr'] = g['lr']*0.5**(ratio**(1/2))
-        elif args.lr_scheduler=='ParticleNet' or args.lr_scheduler=='ParticleNet-Lite':
-            #sched_message = f"Epoch {epoch}/{args.epochs+start_epoch}, LR: {lr_scheduler.get_last_lr()[0]:.9f}"
-            #print(sched_message)
-            if epoch < start_epoch + args.warmup_epochs:
-                lambda_scheduler.step()
-            else:
-                reduce_scheduler.step(val_loss)
-        dist.barrier() # syncronize
-
-def test(res):
-    ### test on best model
-    best_model = torch.load(f"{args.logdir}/{args.exp_name}/best-val-model.pt", map_location=torch.cuda.set_device(local_rank))
-    ddp_model.load_state_dict(best_model['state_dict'])
-    with torch.no_grad():
-        test_res = run(0, dataloaders['test'], partition='test')
-    preds = [gather_preds(r) for r in test_res]
-    if (rank == 0):
-        np.save(f"{args.logdir}/{args.exp_name}/score_source.npy", preds[0])
-        np.save(f"{args.logdir}/{args.exp_name}/score_target.npy", preds[1])
-        metrics = [get_metric(pred, r) for pred, r in zip(preds, test_res)]
-        #The form of each metric is: {'domain': r['domain'],'test_loss': r['BCE loss'], 'test_acc': r['acc'],
-        #          'test_auc': auc, 'test_1/eB_0.3':1./eB[0],'test_1/eB_0.5':1./eB[1]}
-        fig=plt.figure()
-        first_tpr = []
-        for m in metrics:
-            idx = int(max(np.max(np.where(m['fpr']==0)[0]), np.max(np.where(m['tpr']==0)[0]))) + 1
-            first_tpr.append(m['tpr'][idx])
-            plt.plot(m['tpr'][idx:], 1/m['fpr'][idx:], label=m['domain'])
-            del m['fpr']
-            del m['tpr']
-        dummy_x = np.linspace(min(first_tpr), 1, 1000)
-        plt.plot(dummy_x, 1/dummy_x, label='random')
-        plt.xlabel('tpr')
-        plt.ylabel('1/fpr')
-        plt.xlim([0, 1])
-        plt.yscale('log')
-        plt.legend(frameon=False)
-        plt.savefig(f"{args.logdir}/{args.exp_name}/ROC_curve.pdf")
-        res = [res, {}]
-        for r, m in zip(res, metrics):
-            r.update(m)
-            print("Test domain: " + r['domain'] +  "\t BCE Loss: %.4f \t MMD Loss: %.4f \t Acc: %.4f \t AUC: %.4f \t 1/eB 0.3: %.4f \t 1/eB 0.5: %.4f"
-               % (r['test_BCE_loss'], r['test_MMD_loss'], r['test_acc'], r['test_auc'], r['test_1/eB_0.3'], r['test_1/eB_0.5']))
-        json_objects = [json.dumps(r, indent=4) for r in res]
-        with open(f"{args.logdir}/{args.exp_name}/test-result.json", "w") as outfile:
-            for obj in json_objects:
-                outfile.write(obj)
 
 if __name__ == "__main__":
     print('starting script')
@@ -518,7 +231,7 @@ if __name__ == "__main__":
         local_rank = rank - gpus_per_node * (rank // gpus_per_node)
         num_workers = int(os.environ["SLURM_CPUS_PER_TASK"])
     
-    utils.args_init(args, rank, world_size)
+    src.args_init(args, rank, world_size)
 
     if args.pretrained != '':
         if '/' in args.pretrained:
@@ -559,7 +272,7 @@ if __name__ == "__main__":
         num_test = .2*num_train
         num_val = num_test
     num_pts={'train':num_train,'test':num_test,'valid':num_val}
-    is_source = [1, 0]
+    is_target = [0, 1]
     domains = ['Source', 'Target']
 
     #added for compatiblility with ParticleNet
@@ -573,15 +286,15 @@ if __name__ == "__main__":
     ###########################################
 
     #load data
-    datasets = dset.initialize_datasets(datadir=args.datadir, num_pts=num_pts, is_source=is_source, rank=rank, reg_params=reg_params, model=args.model)
+    datasets = dset.initialize_datasets(datadir=args.datadir, num_pts=num_pts, is_target=is_target, rank=rank, reg_params=reg_params, model=args.model)
     num_pts = [num_pts]
     num_pts.append(deepcopy(num_pts[0]))
     # if (rank==0):
-    #     for n, s, d in zip(num_pts, is_source, domains):
+    #     for n, s, d in zip(num_pts, is_target, domains):
     #         print(f"Domain: {d}")
     #         for (split, dataset) in datasets.items():
     #             print('type of dataset', type(dataset))
-    #             n[split] = (dataset[0]['is_source']==s).size() + (dataset[1]['is_source']==s).size()[0]
+    #             n[split] = (dataset[0]['is_target']==s).size() + (dataset[1]['is_target']==s).size()[0]
     #             print(f"{split} samples: {n[split]}")
 
     ### FOR SLURM
@@ -700,7 +413,7 @@ if __name__ == "__main__":
         start_scale = 1
         factors = [[start_scale, start_scale], [start_scale, args.final_scale]]
         milestones = [[start_epoch, start_epoch+constant_steps], [start_epoch+constant_steps, start_epoch+constant_steps+linear_steps]]
-        post_train_lambda = utils.ParticleNetLambda(factors, milestones, ['linear', 'linear'])
+        post_train_lambda = src.ParticleNetLambda(factors, milestones, ['linear', 'linear'])
         lambda_scheduler = LambdaLR(optimizer, post_train_lambda, last_epoch=start_epoch - 1)
         reduce_scheduler = plateau_scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.3, patience=3, min_lr=1e-6, verbose=True)
         #lr_scheduler = SequentialLR(optimizer, schedulers=[lambda_scheduler, reduce_scheduler], milestones=[start_epoch+args.warmup_epochs+1])
@@ -708,7 +421,7 @@ if __name__ == "__main__":
     else:
         if args.lr_scheduler=='CosineAnealing':
             base_scheduler = CosineAnnealingWarmRestarts(optimizer, restart_epoch, 2, verbose = False)
-            lr_scheduler = utils.GradualWarmupScheduler(optimizer, multiplier=1,
+            lr_scheduler = src.GradualWarmupScheduler(optimizer, multiplier=1,
                                                     warmup_epoch=args.warmup_epochs,
                                                     after_scheduler=base_scheduler) ## warmup
         
@@ -727,12 +440,12 @@ if __name__ == "__main__":
             for ep in epochs_main:
                 epochs.append([e+args.warmup_epochs for e in ep])
             schedule_types = ['linear', 'linear', 'linear', 'exp']
-            pn_lambda = utils.ParticleNetLambda(factors, epochs, schedule_types)
+            pn_lambda = src.ParticleNetLambda(factors, epochs, schedule_types)
             lr_scheduler = LambdaLR(optimizer, pn_lambda)
         else:
             print(args.lr_scheduler + " is not a valid learning rate scheduler")
     loss_stats = {'init_MMD': 0.006, 'init_BCE': 0.27, 'lambda_adjust': (lambda x: 1)}
-    mmd_sched = utils.MMDScheduler(args.MMDturnon_epoch, args.MMDturnon_width)
+    mmd_sched = src.MMDScheduler(args.MMDturnon_epoch, args.MMDturnon_width)
     ### loss function
     bce = nn.CrossEntropyLoss()
     mmd = da.MMDLoss(kernel=da.RBF(n_kernels=args.n_kernels, device=local_rank))
