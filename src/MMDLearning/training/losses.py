@@ -48,6 +48,22 @@ class MMDLoss(nn.Module):
         #print('memory of XX: ', XX.element_size())
         return XX - 2 * XY + YY
 
+class LambdaAdjust(nn.Module):
+
+    def __init__(self, tau, kappa):
+        super().__init__()
+        self.register_buffer('tau', torch.as_tensor(tau))
+        self.register_buffer('kappa', torch.as_tensor(kappa))
+        self.relu  = nn.ReLU()
+
+    def forward(self, mmd_val):
+        # mmd_val is a scalar tensor
+        if self.kappa==0:
+            return torch.tensor(1.0, device=mmd_val.device)
+        pos = self.relu(self.tau - mmd_val)
+        return torch.exp(-self.kappa * pos)
+
+
 if __name__=='__main__':
     mmd = MMDLoss()
     n_data = 1000

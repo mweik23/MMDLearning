@@ -34,7 +34,7 @@ class ParticleNetPredictor(Predictor):
             "points":   batch['points'].to(device, dtype),
             "features": batch['features'].to(device, dtype),
             "mask":     batch['label'].to(device, dtype),
-            "label":    batch['is_signal'].to(device, dtype).long(),
+            "is_signal": batch['is_signal'].to(device, dtype).long(),
             "is_target": batch['is_target'].to(device, dtype),
             "n_s": batch['n_s'].to(device, dtype)
         }

@@ -31,7 +31,7 @@ parser.add_argument('--seed', type=int, default=99, metavar='N',
                     help='random seed')
 parser.add_argument('--log_interval', type=int, default=100, metavar='N',
                     help='how many batches to wait before logging training status')
-parser.add_argument('--mmd_interval', type=int, default=1, metavar='N',
+parser.add_argument('--mmd_interval', type=int, default=-1, metavar='N',
                     help='how many batches to wait before calculating the null MMD')
 parser.add_argument('--val_interval', type=int, default=1, metavar='N',
                     help='how many epochs to wait before validation')

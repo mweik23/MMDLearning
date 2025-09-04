@@ -7,6 +7,7 @@ from copy import deepcopy
 #---------local imports-----------------------
 from metrics import get_batch_metrics, get_correct, display_status, RunningStats
 from reporting import display_epoch_summary
+from losses import LambdaAdjust
 #---------------------------------------------
 
 # put SRC on path
@@ -18,7 +19,7 @@ sys.path.append(str(SRC_DIR))
 from MMDLearning.models.predictors import make_predictor
 from MMDLearning.utils.distributed import globalize_epoch_totals, epoch_metrics_from_globals, gather_scores, gather_preds
 from MMDLearning.utils.buffers import EpochLogitBuffer
-from MMDLearning.utils.utils import split_batch, LossDict
+from MMDLearning.utils.utils import split_batch, LossDict, MetricHistory
 #---------------------------------------------------
 
 
@@ -39,7 +40,7 @@ class Trainer:
     loss_stats: dict
     train_sampler: any
     dataloaders: dict   # {'train': ..., 'valid': ..., 'test': ...}
-    val_logits: dict | None = None  
+    lambda_adjust: LambdaAdjust = LambdaAdjust(1.0, 0.0)  # default no-op
 
     def __post_init__(self):
         # create the predictor once, based on model choice
@@ -51,7 +52,8 @@ class Trainer:
         self.start_epoch = 0
         self.final_epoch = self.args.epochs + self.start_epoch
         self.is_target = {'Source': 0, 'Target': 1}
-        self.loss_stats = {'init_MMD': 0.006, 'init_BCE': 0.27, 'lambda_adjust': (lambda x: 1)} #guessing these values, will be updated after the first validation run
+        self.metrics = MetricHistory()
+        self.metrics.update(init_loss={'BCE': 0.27, 'MMD': 0.006}) #guess values
 
     def _set_train(self, epoch):
         self.train_sampler.set_epoch(epoch)
@@ -90,10 +92,26 @@ class Trainer:
         torch.distributed.all_gather(pred, t)
         return torch.cat(pred).cpu()
     
+        #TODO: configure for multi gpu training
+    def get_mmd_floor(self, loader, quantiles=[0.5, 0.9]):
+        print('>> getting MMD stats...')
+        self.ddp_model.eval()
+        mmd_floor_dist = []
+        for i, data in enumerate(loader):
+            prepared = self.predictor.prepare_batch(data, self.local_rank, dtype=self.dtype)
+            _, encoded = self.predictor.forward(self.ddp_model, prepared)
+            z1, z2 = torch.chunk(encoded, 2, dim=0)
+            mmd_floor_dist.append(self.loss_fns['mmd'](z1, z2))
+        mmd_floor_dist = torch.stack(mmd_floor_dist, dim=0)
+        assert mmd_floor_dist.device == torch.device(f"cuda:{self.local_rank}")
+        mmd_med, mmd_upper = torch.quantile(mmd_floor_dist, torch.tensor(quantiles, device=mmd_floor_dist.device, dtype=torch.float32))
+        return mmd_med, mmd_upper
+    
     def _run_epoch(self, epoch: int, loader, partition: str, get_buffers: bool = False, domains=['Source', 'Target']):
         #TODO: make this be an optional argument
         lambda_adjust = self.loss_stats['lambda_adjust']
         if partition == 'train':
+            #TODO: change this when I change the batchnorm eval option
             self._set_train(epoch)
         else:
             self.ddp_model.eval()
@@ -142,7 +160,7 @@ class Trainer:
             mmd_scale = 1 if partition=='test' else self.mmd_sched(epoch-self.start_epoch)
 
             #TODO: setup control of lambda adjust, calculate the multiplicative factor before epoch/training
-            loss_mmd = lambda_adjust(mmd_val)*mmd_scale*self.args.MMD_frac*mmd_val*self.loss_stats['init_BCE']/self.loss_stats['init_MMD']
+            loss_mmd = mmd_scale*self.args.MMD_frac*self.metrics.mmd_norm*mmd_val
 
             if partition == 'train':
                 (batch_metrics['BCE loss'][0] + loss_mmd).backward()
@@ -166,13 +184,8 @@ class Trainer:
     
         torch.cuda.empty_cache() #can put this in the batch loop to free memory at the end of each batch but it slows things down
         # ---------- reduce -----------
-
-        #gather logits and labels if buffers are requested
-        if get_buffers:
-            payload = {d: buf.gather_to_rank0() for d, buf in bufs.items()}
-        
         #globalize epoch metrics
-        res = {}
+        metrics = {}
         device = next(self.model.parameters()).device
         for d, tr in trackers.items():
             g_bce, g_mmd, g_corr, g_cnt = globalize_epoch_totals(
@@ -182,11 +195,16 @@ class Trainer:
                 local_count=tr.epoch_count,
                 device=device,
             )
-            res[d] = epoch_metrics_from_globals(g_bce_sum=g_bce, g_mmd_sum=g_mmd, g_correct=g_corr, g_count=g_cnt)
-            display_epoch_summary(partition="train", epoch=epoch, tot_epochs=self.args.epochs,
-                            bce=res[d]["bce"], mmd=res[d]["mmd"], acc=res[d]["acc"], time_s=tr.epoch_time(),
-                            logger=getattr(self, "logger", None))
-        return res
+            metrics[d] = epoch_metrics_from_globals(g_bce_sum=g_bce, g_mmd_sum=g_mmd, g_correct=g_corr, g_count=g_cnt)
+            metrics[d]['time'] = tr.epoch_time()
+        #gather logits and labels if buffers are requested
+        if get_buffers:
+            buffers = {d: buf.gather_to_rank0() for d, buf in bufs.items()}
+            for buf in bufs.values():
+                buf.clear()
+        #TODO: save metrics and buffers - probably will do it outside _run_epoch
+        
+        return metrics, buffers if get_buffers else None
 
     @torch.no_grad()
     def test(self, res: dict):
@@ -196,87 +214,101 @@ class Trainer:
         pass
     
 
-    def train(self, res: dict):
+    def train(self, metrics: dict):
         #start with a validation run if starting with a pretrained model
         print('Learning rates (before val): ', [g['lr'] for g in self.optimizer.param_groups])
         if self.args.pretrained !='':
             with torch.no_grad():
-                val_res = self._run_epoch(self.start_epoch-1, self.dataloaders['valid'], partition='valid')[0]
-            val_logits['init'] = [gather_scores(l) for l in val_logits['last']]
-            val_logits['best'] = deepcopy(val_logits['init'])
-            if (self.rank == 0): # only master process save
-                is_best=False
-                if self.args.MMD_frac==0:
-                    loss_stats['init_MMD'] = 1
-                loss_stats['init_MMD'] = val_res['MMD loss']*loss_stats['init_MMD']/loss_stats['init_BCE']/args.MMD_frac
-                loss_stats['init_BCE'] = val_res['BCE loss']
-                print('loss stats: ', loss_stats)
-                res['val_time'].append(val_res['time'])
-                res['val_BCE_loss'].append(val_res['BCE loss'])
-                res['val_MMD_loss'].append(args.MMD_frac*val_res['BCE loss'])
-                res['val_acc'].append(val_res['acc'])
-                res['epochs'].append(start_epoch-1)
-                ## save best model (minimum BCE + MMD with the MMD_coef only - no epoch dependent coefs) 
-                val_loss = val_res['BCE loss'] + res['val_MMD_loss'][-1]
-                if val_loss < res['best_val']:
-                    is_best=True
-                    res['best_val'] = val_loss
-                    res['best_epoch'] = start_epoch-1
-                print("Val BCE loss: %.4f \t Val MMD loss: %.4f \t  Val acc: %.4f" % (val_res['BCE loss'], val_res['MMD loss'], val_res['acc']))
-                print("Best val loss: %.4f at epoch %d." % (res['best_val'],  res['best_epoch']))
-                res['initial val MMD'] = loss_stats['init_MMD']
-                res['initial val BCE'] = loss_stats['init_BCE']
+                # first validation run to get initial MMD and BCE
+                val_metrics, val_buffers = self._run_epoch(self.start_epoch-1, self.dataloaders['valid'], 'valid', get_buffers=True)
+            #save logits and labels for validation
+            #TODO: make saving more robust
+            if val_buffers['Source'] is not None:
+                torch.save(val_buffers, f'{self.args.logdir}/{self.args.exp_name}/init_val_buffers.pt')
+            
+            print('loss stats: ', self.metrics.get('init_loss'))
+            self.metrics.append(
+                epochs = self.start_epoch-1,
+                val_BCE = val_metrics['BCE loss'],
+                val_MMD = self.args.MMD_frac*val_metrics['BCE loss'], # by construction
+                val_loss = val_metrics['BCE loss'] + self.args.MMD_frac*val_metrics['BCE loss'], 
+                val_acc = val_metrics['acc'],
+                val_time = val_metrics['time'],
+            )
+            if self.args.MMD_frac==0:
+                self.metrics['init_loss']['MMD'] = 1
+            self.metrics.update(init_loss={'BCE': val_metrics['BCE loss'], 'MMD': val_metrics['MMD loss']/self.metrics.mmd_norm/self.args.MMD_frac},
+                                best_val=self.metrics.get('val_loss')[-1],
+                                best_epoch=self.start_epoch-1
+                                )
 
+            ## save best model (minimum BCE + MMD with the MMD_coef only - no epoch dependent coefs) 
+            
+            display_epoch_summary(partition="validation", epoch=self.start_epoch-1, tot_epochs=self.final_epoch,
+                            bce=self.metrics.get("val_BCE"), mmd=self.metrics.get("val_MMD"), acc=self.metrics.get("val_acc"), time_s=self.metrics.get("val_time"),
+                            logger=getattr(self, "logger", None))
 
         ### training and validation
-        train_sampler.set_epoch(start_epoch-1)
-        for epoch in range(start_epoch, start_epoch+args.epochs):
+        self.train_sampler.set_epoch(self.start_epoch-1)
+        for epoch in range(self.start_epoch, self.final_epoch):
             #percentiles = get_mmd_floor(ddp_model, data1, data2)
             is_best=False
-            if args.mmd_interval != -1:
-                if (epoch-start_epoch) % args.mmd_interval == 0:
+            
+            # lambda adjust setting
+            #TODO: rename mmd_interval to mmd_adjust_interval
+            if self.args.mmd_interval != -1:
+                if (epoch-self.start_epoch) % self.args.mmd_interval == 0:
                     with torch.no_grad():
                         quantiles =[0.5, 0.975]
-                        mmd_med, mmd_upper = get_mmd_floor(dataloaders['train'], quantiles=quantiles)
+                        mmd_med, mmd_upper = self.get_mmd_floor(self.dataloaders['train'], quantiles=quantiles)
                         print('MMD quantile ', quantiles[0], ': ',  mmd_med)
                         print('MMD quantile ', quantiles[1], ': ',  mmd_upper)
-                    lambda_adjust = src.LambdaAdjust(2*mmd_upper, 2*(mmd_upper-mmd_med)**(-1))
-                    loss_stats['lambda_adjust'] = lambda_adjust
-            print('Learning rate: ', [g['lr'] for g in optimizer.param_groups])
-            train_res = run(epoch, dataloaders['train'], partition='train')[0]
-            print("Time: train: %.2f \t Train BCE loss %.4f \t Train MMD loss %.4f \t Train acc: %.4f" % (train_res['time'], train_res['BCE loss'], train_res['MMD loss'], train_res['acc']))
-            if epoch % args.val_interval == 0:
-                val_logits['last'] = [[], []]
+                    self.lambda_adjust = LambdaAdjust(2*mmd_upper, 2*(mmd_upper-mmd_med)**(-1))
+                            
+            print('Learning rate: ', [g['lr'] for g in self.optimizer.param_groups])
+            #----------training------------
+            train_metrics, _ = self._run_epoch(epoch, self.dataloaders['train'], 'train')
+            
+            display_epoch_summary(partition="train", epoch=epoch, tot_epochs=self.final_epoch,
+                            bce=train_metrics['BCE loss'], mmd=train_metrics['MMD loss'], acc=train_metrics['acc'], time_s=train_metrics['time'],
+                            logger=getattr(self, "logger", None))
+            self.metrics.append(
+                    epochs = self.start_epoch-1,
+                    train_BCE = train_metrics['BCE loss'],
+                    train_MMD = train_metrics['MMD loss'], # by construction
+                    train_loss = train_metrics['BCE loss'] + train_metrics['MMD loss'], 
+                    train_acc = train_metrics['acc'],
+                    train_time = train_metrics['time'],
+                    lr = [g['lr'] for g in self.optimizer.param_groups]
+                )
+            #----------validation------------
+            if epoch % self.args.val_interval == 0:
                 with torch.no_grad():
-                    val_res = run(epoch, dataloaders['valid'], partition='valid')[0]
-                val_loss = val_res['BCE loss'] + val_res['MMD loss']
-                if (rank == 0): # only master process save
-                    res['lr'].append([g['lr'] for g in optimizer.param_groups])
-                    res['train_time'].append(train_res['time'])
-                    res['val_time'].append(val_res['time'])
-                    res['train_BCE_loss'].append(train_res['BCE loss'])
-                    res['train_MMD_loss'].append(train_res['MMD loss'])
-                    res['train_acc'].append(train_res['acc'])
-                    res['val_BCE_loss'].append(val_res['BCE loss'])
-                    res['val_MMD_loss'].append(val_res['MMD loss'])
-                    res['val_acc'].append(val_res['acc'])
-                    res['epochs'].append(epoch)
-                    res['val_tot_loss'].append(val_loss)
-                    if val_loss < res['best_val']:
-                        is_best=True
-                        val_logits['best'] = [gather_scores(l) for l in val_logits['last']]
-                        res['best_val'] = val_loss
-                        res['best_epoch'] = epoch
-                    checkpoint = {'epoch': epoch + 1, 'state_dict': ddp_model.state_dict(), 'optimizer': optimizer.state_dict()}
-                    save_ckp(checkpoint, is_best, args.logdir, args.exp_name, epoch)
-                    print("Epoch %d/%d finished." % (epoch, start_epoch+args.epochs-1))
-                    print("Train time: %.2f \t Val time %.2f" % (train_res['time'], val_res['time']))
-                    print("Train BCE loss %.4f \t Train MMD loss %.4f \t Train acc: %.4f" % (train_res['BCE loss'], train_res['MMD loss'], train_res['acc']))
-                    print("Val BCE loss: %.4f \t Val MMD loss: %.4f \t  Val acc: %.4f" % (val_res['BCE loss'], val_res['MMD loss'], val_res['acc']))
-                    print("Best val loss: %.4f at epoch %d." % (res['best_val'],  res['best_epoch']))
+                    val_metrics, _ = self._run_epoch(self.start_epoch-1, self.dataloaders['valid'], 'valid')
+                
+                display_epoch_summary(partition="validation", epoch=self.start_epoch-1, tot_epochs=self.final_epoch,
+                            bce=val_metrics['BCE'], mmd=val_metrics['MMD'], acc=val_metrics['acc'], time_s=val_metrics['time'],
+                            logger=getattr(self, "logger", None))
+                
+                val_loss = val_metrics['BCE loss'] + val_metrics['MMD loss']
+                self.metrics.append(
+                        val_BCE = val_metrics['BCE loss'],
+                        val_MMD = val_metrics['MMD loss'],
+                        val_loss = val_loss,
+                        val_acc = val_metrics['acc'],
+                        val_time = val_metrics['time'],
+                    )
+                if val_loss < self.metrics.get('best_val'):
+                    is_best=True
+                    self.metrics.update(best_val=val_loss,
+                                        best_epoch=epoch
+                                        )
+                    
+                    checkpoint = {'epoch': epoch + 1, 'state_dict': self.ddp_model.state_dict(), 'optimizer': self.optimizer.state_dict()}
+                    self._save_ckp(checkpoint, is_best, epoch)
 
-                    json_object = json.dumps(res, indent=4)
-                    with open(f"{args.logdir}/{args.exp_name}/train-result.json", "w") as outfile:
+                    json_object = json.dumps(self.metrics.to_dict(), indent=4)
+                    with open(f"{self.args.logdir}/{self.args.exp_name}/train-result.json", "w") as outfile:
                         outfile.write(json_object)
             #print('DEBUG: ', args.lr_scheduler)
             ## adjust learning rate
