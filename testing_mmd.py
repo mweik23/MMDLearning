@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import os
 import argparse
 import numpy as np
-from top import dataset as dset
+from src import dataset as dset
 import torch.distributed as dist
 import json
 from torch.nn.parallel import DistributedDataParallel
