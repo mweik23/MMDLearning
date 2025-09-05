@@ -1,8 +1,113 @@
 import torch
 import torch.nn as nn
-from torch.optim.lr_scheduler import _LRScheduler, ReduceLROnPlateau, ConstantLR, ExponentialLR, ChainedScheduler
+from torch.optim.lr_scheduler import _LRScheduler, ReduceLROnPlateau, ConstantLR, ExponentialLR, ChainedScheduler, LinearLR
 import numpy as np
 from sklearn.metrics import roc_auc_score, roc_curve
+# types
+from dataclasses import dataclass
+from typing import Literal, Callable, Optional
+
+class WarmupThenPlateau:
+    def __init__(self, optimizer, *, warmup_steps:int|None=None, warmup_epochs:int|None=None,
+                 start_factor:float=0.0, end_factor:float=1.0, plateau_kwargs:dict|None=None):
+        plateau_kwargs = plateau_kwargs or dict(mode="min", factor=0.5, patience=5)
+        assert (warmup_steps is None) ^ (warmup_epochs is None), "Specify steps OR epochs."
+
+        total_iters = warmup_steps if warmup_steps is not None else warmup_epochs
+        self.per_step = warmup_steps is not None
+
+        self.warmup = LinearLR(optimizer, start_factor=start_factor, total_iters=total_iters)
+        self.plateau = ReduceLROnPlateau(optimizer, **plateau_kwargs)
+        self.mode = plateau_kwargs.get("mode", "min")
+
+    def step_batch(self):
+        if self.per_step and self.warmup._last_epoch < self.warmup.total_iters:
+            self.warmup.step()
+            
+    #call one step before the first epoch
+    def step_epoch(self, val_metric: float = None):
+        if not self.per_step and self.warmup._last_epoch < self.warmup.total_iters:
+            self.warmup.step()
+        else:
+            if val_metric is None:
+                if self.mode == "min":
+                    val_metric = float('inf')
+                else:
+                    val_metric = float('-inf')
+            self.plateau.step(val_metric)
+'''
+call for WarmupThenPlateau::
+
+SchedConfig(
+    kind="warmup_plateau",
+    lr_min=1e-5,
+    warmup_epochs=5,
+    factor = 0.5,
+    patience = 3,
+    mode = "min"
+    )
+'''
+@dataclass
+class SchedConfig:
+    kind: Literal[
+        "cosine_warmup", "onecycle", "step", "multistep", "plateau"
+    ] = "cosine_warmup", "warmup_plateau"
+    lr_min: float = 0.0
+    warmup_epochs: int = 10
+    step_size: int = 30
+    gamma: float = 0.1
+    milestones: tuple[int, ...] = ()
+    pct_start: float = 0.3  # for OneCycle
+    mode: Literal["min","max"] = "min"  # for Plateau
+    factor: float = 0.5
+    patience: int = 5
+
+def make_scheduler(optimizer, cfg: SchedConfig, *, total_steps: int|None=None, steps_per_epoch: int=1):
+    if cfg.kind == "cosine_warmup":
+        def lf(step):
+            if step < cfg.warmup_steps:
+                return (step + 1) / max(1, cfg.warmup_steps)
+            # cosine from 1.0 -> lr_min ratio
+            prog = (step - cfg.warmup_steps) / max(1, total_steps - cfg.warmup_steps)
+            return cfg.lr_min + (1 - cfg.lr_min) * 0.5 * (1 + torch.cos(torch.pi * prog))
+        return torch.optim.lr_scheduler.LambdaLR(optimizer, lf)
+
+    if cfg.kind == "onecycle":
+        return torch.optim.lr_scheduler.OneCycleLR(
+            optimizer,
+            max_lr=[g['lr'] for g in optimizer.param_groups],
+            total_steps=total_steps,
+            pct_start=cfg.pct_start,
+            anneal_strategy="cos",
+            cycle_momentum=False,
+        )
+
+    if cfg.kind == "step":
+        return torch.optim.lr_scheduler.StepLR(optimizer, step_size=cfg.step_size, gamma=cfg.gamma)
+
+    if cfg.kind == "multistep":
+        return torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=list(cfg.milestones), gamma=cfg.gamma)
+
+    if cfg.kind == "plateau":
+        return ReduceLROnPlateau(
+            optimizer, mode=cfg.mode, factor=cfg.factor, patience=cfg.patience, verbose=False
+        )
+    if cfg.kind == "warmup_plateau":
+        if steps_per_epoch == 1:
+            return WarmupThenPlateau(
+            optimizer,
+            warmup_epochs=cfg.warmup_epochs,
+            start_factor=cfg.lr_min,
+            plateau_kwargs=dict(mode=cfg.mode, factor=cfg.factor, patience=cfg.patience)
+        )
+        else:
+            return WarmupThenPlateau(
+                optimizer,
+                warmup_steps=cfg.warmup_epochs * steps_per_epoch,
+                start_factor=cfg.lr_min,
+                plateau_kwargs=dict(mode=cfg.mode, factor=cfg.factor, patience=cfg.patience)
+            )
+    raise ValueError(f"Unknown scheduler kind: {cfg.kind}")
 
 
 class GradualWarmupScheduler(_LRScheduler):

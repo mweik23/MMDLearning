@@ -8,6 +8,7 @@ from copy import deepcopy
 from metrics import get_batch_metrics, get_correct, display_status, RunningStats
 from reporting import display_epoch_summary
 from losses import LambdaAdjust
+from schedulers import SchedConfig, make_scheduler
 #---------------------------------------------
 
 # put SRC on path
@@ -29,11 +30,10 @@ class Trainer:
     args: any
     ddp_model: torch.nn.Module
     optimizer: torch.optim.Optimizer
-    lr_scheduler: any | None
     rank: int
     local_rank: int
     world_size: int
-
+    sched_config: SchedConfig
     # “context” shared across methods (use your existing objects)
     loss_fns: LossDict # {'bce': torch.nn.Module 'mmd': torch.nn.Module}
     mmd_sched: any
@@ -54,6 +54,8 @@ class Trainer:
         self.is_target = {'Source': 0, 'Target': 1}
         self.metrics = MetricHistory()
         self.metrics.update(init_loss={'BCE': 0.27, 'MMD': 0.006}) #guess values
+        self.scheduler = make_scheduler(self.optimizer, self.sched_config)
+
 
     def _set_train(self, epoch):
         self.train_sampler.set_epoch(epoch)
@@ -250,6 +252,7 @@ class Trainer:
 
         ### training and validation
         self.train_sampler.set_epoch(self.start_epoch-1)
+        self.scheduler.step_epoch()
         for epoch in range(self.start_epoch, self.final_epoch):
             #percentiles = get_mmd_floor(ddp_model, data1, data2)
             is_best=False
@@ -310,24 +313,7 @@ class Trainer:
                     json_object = json.dumps(self.metrics.to_dict(), indent=4)
                     with open(f"{self.args.logdir}/{self.args.exp_name}/train-result.json", "w") as outfile:
                         outfile.write(json_object)
-            #print('DEBUG: ', args.lr_scheduler)
-            ## adjust learning rate
-            if args.lr_scheduler=='Reduce':
-                lr_scheduler.step(val_loss)
-            elif args.lr_scheduler=='CosineAnealing':
-                ## adjust learning rate
-                if (epoch < 31*int(round(1/ratio**(1/2)))):
-                    lr_scheduler.step(metrics=val_res['BCE loss'] + val_res['MMD loss'])
-                else:
-                    for g in optimizer.param_groups:
-                        g['lr'] = g['lr']*0.5**(ratio**(1/2))
-            elif args.lr_scheduler=='ParticleNet' or args.lr_scheduler=='ParticleNet-Lite':
-                #sched_message = f"Epoch {epoch}/{args.epochs+start_epoch}, LR: {lr_scheduler.get_last_lr()[0]:.9f}"
-                #print(sched_message)
-                if epoch < start_epoch + args.warmup_epochs:
-                    lambda_scheduler.step()
-                else:
-                    reduce_scheduler.step(val_loss)
+            self.scheduler.step_epoch()
             dist.barrier() # syncronize
 
 def test(res):
