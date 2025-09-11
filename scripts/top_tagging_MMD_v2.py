@@ -11,90 +11,97 @@ import domain_adapt as da
 from copy import deepcopy
 import os
 import matplotlib.pyplot as plt
+from pathlib import Path
+SRC_path = Path(__file__).parent.resolve() / 'src'
+import sys
+sys.path.append(str(SRC_path))
+from MMDLearning.utils.distributed import setup_dist, DistInfo
+from MMDLearning.utils.io import config_init
 
-parser = argparse.ArgumentParser(description='Top tagging')
-parser.add_argument('--exp_name', type=str, default='', metavar='N',
-                    help='experiment_name')
-parser.add_argument('--test_mode', action='store_true', default=False,
-                    help = 'test best model')
-parser.add_argument('--batch_size', type=int, default=32, metavar='N',   
-                    help='input batch size for training')
-parser.add_argument('--num_train', type=int, default=-1, metavar='N',
-                    help='number of training samples')
-parser.add_argument('--epochs', type=int, default=35, metavar='N',
-                    help='number of training epochs')
-parser.add_argument('--warmup_epochs', type=int, default=5, metavar='N',
-                    help='number of warm-up epochs')
-parser.add_argument('--c_weight', type=float, default=5e-3, metavar='N',
-                    help='weight of x model')                 
-parser.add_argument('--seed', type=int, default=99, metavar='N',
-                    help='random seed')
-parser.add_argument('--log_interval', type=int, default=100, metavar='N',
-                    help='how many batches to wait before logging training status')
-parser.add_argument('--mmd_interval', type=int, default=-1, metavar='N',
-                    help='how many batches to wait before calculating the null MMD')
-parser.add_argument('--val_interval', type=int, default=1, metavar='N',
-                    help='how many epochs to wait before validation')
-parser.add_argument('--datadir', nargs='+', default='./data/top', metavar='N',
-                    help='data directories')
-parser.add_argument('--logdir', type=str, default='./logs/top', metavar='N',
-                    help='folder to output logs')
-parser.add_argument('--dropout', type=float, default=0.2, metavar='N',
-                    help='dropout probability')
-parser.add_argument('--lr', type=float, default=1e-3, metavar='N',
-                    help='learning rate')
-parser.add_argument('--final_scale', type=float, default=50, metavar='N',
-                    help='max learning rate scale')
-parser.add_argument('--n_hidden', type=int, default=72, metavar='N',
-                    help='dim of latent space')
-parser.add_argument('--n_layers', type=int, default=6, metavar='N',
-                    help='number of LGEBs')
-parser.add_argument('--num_workers', type=int, default=4, metavar='N',
-                    help='number of workers for the dataloader')
-parser.add_argument('--weight_decay', type=float, default=1e-2, metavar='N',
-                    help='weight decay')
-parser.add_argument('--no_batchnorm', action='store_true', default=False,
-                    help = 'test best model')
-parser.add_argument('--no_layernorm', action='store_true', default=False,
-                    help = 'remove batchnorm layers')
-parser.add_argument('--auto_scale', action='store_true', default=False,
-                    help = 'scale network and epochs with amount of data')
-parser.add_argument('--lr_scheduler', type=str, default='CosineAnealing', metavar='N',
-                    help='patience for ReduceLROnPlateau scheduler')
-parser.add_argument('--patience', type=int, default=10, metavar='N',
-                    help='learning rate scheduler')
-parser.add_argument('--factor', type=float, default=0.1, metavar='N',
-                    help='factor for LR scheduler if reduce')
-parser.add_argument('--MMDturnon_epoch', type=int, default=5, metavar='N',
-                    help='epoch when MMD turns on')
-parser.add_argument('--MMD_coef', type=float, default=0, metavar='N', help='prefactor for the MMD loss term')
-parser.add_argument('--MMD_frac', type=float, default=0, metavar='N', help='prefactor for the MMD loss term')
-parser.add_argument('--MMDturnon_width', type=int, default=5, metavar='N',
-                    help='the number of epochs it takes for MMD to smoothly turnon')
-parser.add_argument('--intermed_mmd', action='store_true', default=False,
-                    help = 'MMD is calculated on an intermediate layer')
-parser.add_argument('--pretrained', type=str, default='', metavar='N',
-                    help='directory with model to start the run with')
-parser.add_argument('--ld_optim_state', action='store_true', default=False,
-                    help='want to load the optimizer state from pretrained run?')
-parser.add_argument('--n_latent', type=int, default=0, metavar='N',
-                    help='dim of latent space')
-parser.add_argument('--n_kernels', type=int, default=5, metavar='N', 
-                    help='number of kernels summed for MMD kernel')
-parser.add_argument('--use_tar_labels', action='store_true', default=False,
-                    help = 'Use target labels for MMD')
-parser.add_argument('--manual', action='store_true', default=False,
-                    help = 'run on manual')
-parser.add_argument('--devices', type=int,  nargs='+', default=[0], metavar='N',
-                    help='device numbers')
-parser.add_argument('--bn_eval', action='store_true', default=False,
-                    help='use batchnorm in eval mode')
-#added this input for compatibility with ParticleNet
-############################################################
-parser.add_argument('--model', type=str, default='LorentzNet', metavar='N',
-                    help='model_name')
-############################################################                    
-parser.add_argument('--local_rank', type=int, default=0)
+def build_parser():
+    parser = argparse.ArgumentParser(description='Top tagging')
+    parser.add_argument('--exp_name', type=str, default='', metavar='N',
+                        help='experiment_name')
+    parser.add_argument('--test_mode', action='store_true', default=False,
+                        help = 'test best model')
+    parser.add_argument('--batch_size', type=int, default=32, metavar='N',   
+                        help='input batch size for training')
+    parser.add_argument('--num_train', type=int, default=-1, metavar='N',
+                        help='number of training samples')
+    parser.add_argument('--epochs', type=int, default=35, metavar='N',
+                        help='number of training epochs')
+    parser.add_argument('--model_config', type=str, default='', metavar='N',
+                        help='model config file')
+    parser.add_argument('--warmup_epochs', type=int, default=5, metavar='N',
+                        help='number of warm-up epochs')             
+    parser.add_argument('--seed', type=int, default=99, metavar='N',
+                        help='random seed')
+    parser.add_argument('--log_interval', type=int, default=100, metavar='N',
+                        help='how many batches to wait before logging training status')
+    parser.add_argument('--mmd_interval', type=int, default=-1, metavar='N',
+                        help='how many batches to wait before calculating the null MMD')
+    parser.add_argument('--val_interval', type=int, default=1, metavar='N',
+                        help='how many epochs to wait before validation')
+    parser.add_argument('--datadir', nargs='+', default='./data/top', metavar='N',
+                        help='data directories')
+    parser.add_argument('--logdir', type=str, default='./logs/top', metavar='N',
+                        help='folder to output logs')
+    parser.add_argument('--dropout', type=float, default=0.2, metavar='N',
+                        help='dropout probability')
+    parser.add_argument('--lr', type=float, default=1e-3, metavar='N',
+                        help='learning rate')
+    parser.add_argument('--final_scale', type=float, default=50, metavar='N',
+                        help='max learning rate scale')
+    parser.add_argument('--n_hidden', type=int, default=72, metavar='N',
+                        help='dim of latent space')
+    parser.add_argument('--n_layers', type=int, default=6, metavar='N',
+                        help='number of LGEBs')
+    parser.add_argument('--num_workers', type=int, default=None, metavar='N',
+                        help='number of workers for the dataloader')
+    parser.add_argument('--weight_decay', type=float, default=1e-2, metavar='N',
+                        help='weight decay')
+    parser.add_argument('--no_batchnorm', action='store_true', default=False,
+                        help = 'test best model')
+    parser.add_argument('--no_layernorm', action='store_true', default=False,
+                        help = 'remove batchnorm layers')
+    parser.add_argument('--auto_scale', action='store_true', default=False,
+                        help = 'scale network and epochs with amount of data')
+    parser.add_argument('--lr_scheduler', type=str, default='CosineAnealing', metavar='N',
+                        help='patience for ReduceLROnPlateau scheduler')
+    parser.add_argument('--patience', type=int, default=10, metavar='N',
+                        help='learning rate scheduler')
+    parser.add_argument('--factor', type=float, default=0.1, metavar='N',
+                        help='factor for LR scheduler if reduce')
+    parser.add_argument('--MMDturnon_epoch', type=int, default=5, metavar='N',
+                        help='epoch when MMD turns on')
+    parser.add_argument('--MMD_coef', type=float, default=0, metavar='N',
+                        help='prefactor for the MMD loss term')
+    parser.add_argument('--MMD_frac', type=float, default=0, metavar='N',
+                        help='prefactor for the MMD loss term')
+    parser.add_argument('--MMDturnon_width', type=int, default=5, metavar='N',
+                        help='the number of epochs it takes for MMD to smoothly turnon')
+    parser.add_argument('--intermed_mmd', action='store_true', default=False,
+                        help = 'MMD is calculated on an intermediate layer')
+    parser.add_argument('--pretrained', type=str, default='', metavar='N',
+                        help='directory with model to start the run with')
+    parser.add_argument('--ld_optim_state', action='store_true', default=False,
+                        help='want to load the optimizer state from pretrained run?')
+    parser.add_argument('--n_kernels', type=int, default=5, metavar='N', 
+                        help='number of kernels summed for MMD kernel')
+    parser.add_argument('--use_tar_labels', action='store_true', default=False,
+                        help = 'Use target labels for MMD')
+    parser.add_argument('--devices', type=int,  nargs='+', default=[0], metavar='N',
+                        help='device numbers')
+    parser.add_argument('--bn_eval', action='store_true', default=False,
+                        help='use batchnorm in eval mode')
+    #added this input for compatibility with ParticleNet
+    ############################################################
+    parser.add_argument('--model', type=str, default='LorentzNet', metavar='N',
+                        help='model_name')
+    ############################################################                    
+    parser.add_argument('--local_rank', type=int, default=0)
+    
+    return parser
 
 def make_train_plt(output, pretrained):
     if pretrained:
@@ -209,48 +216,44 @@ def get_mmd_floor(loader, quantiles=[0.5, 0.9]):
     mmd_med, mmd_upper = torch.quantile(mmd_floor_dist, torch.tensor(quantiles, device=mmd_floor_dist.device, dtype=torch.float32))
     return mmd_med, mmd_upper
 
-
-
-if __name__ == "__main__":
-    print('starting script')
-    ### initialize args
-    args = parser.parse_args()
-    world_size = int(os.environ["WORLD_SIZE"])
-    if args.manual:
-        if len(args.devices) != world_size:
-            devices = range(args.devices[0], args.devices[0]+world_size)
-        else:
-            devices = args.devices
-        rank = args.local_rank
-        local_rank = devices[args.local_rank]
-        num_workers = args.num_workers
-    else:
-        rank  = int(os.environ["SLURM_PROCID"])
-        gpus_per_node = int(os.environ["SLURM_GPUS_ON_NODE"])
-        device_name = torch.cuda.get_device_name()
-        local_rank = rank - gpus_per_node * (rank // gpus_per_node)
-        num_workers = int(os.environ["SLURM_CPUS_PER_TASK"])
+def main(argv=None):
+    #get arguments
+    parser = build_parser()
+    args = parser.parse_args(argv)
     
-    src.args_init(args, rank, world_size)
-
-    if args.pretrained != '':
-        if '/' in args.pretrained:
-            pt_exp = args.pretrained.split('/')[0]
-            pt_epoch = args.pretrained
-        else:
-            pt_exp = args.pretrained
-            pt_epoch = args.pretrained + '/best-val-model'
-        with open(f"{args.logdir}/{pt_exp}/args.json", 'r') as file:
-            pt_args = json.load(file)
-
-        args.model=pt_args['model']
-        args.datadir = pt_args['datadir']
-        args.no_batchnorm = pt_args['no_batchnorm']
-
-        with open(f"{args.logdir}/{pt_exp}/train-result.json") as json_data:
-            train_res_init = json.load(json_data)
-        json_data.close()
-
+    #set up distributed training
+    dist_info: DistInfo = setup_dist(arg_num_workers=args.num_workers)
+    if dist_info.is_primary:
+        print(dist_info)
+    device = torch.device(dist_info.device_name)
+    dtype = torch.float32
+    
+    #set up training configuration
+    cfg = config_init(args, dist_info)
+    
+    ### set random seed
+    torch.manual_seed(cfg.seed)#+ rank)
+    np.random.seed(cfg.seed)#+ rank)
+    
+    
+    datasets = dset.initialize_datasets(datadir=cfg.datadir, splits=['train', 'valid'], num_data=cfg.num_train, rank=dist_info.rank, model=cfg.model)
+    
+    train_sampler, dataloaders = dset.retrieve_dataloaders(
+                                    datasets,
+                                    2*args.batch_size,
+                                    num_workers=dist_info.num_workers,
+                                    rank=dist_info.rank,
+                                    num_replicas=dist_info.world_size,
+                                    model_arch=cfg.model)
+    
+    #load model config
+    if cfg.model_config != '':     
+        with open(cfg.model_config, 'r') as f:
+            model_config = json.load(f)
+    
+    
+if __name__ == "__main__":
+    main()
 
 
     #added for compatibilty with ParticleNet
@@ -260,20 +263,6 @@ if __name__ == "__main__":
     elif args.model=='ParticleNet' or args.model=='ParticleNet-Lite':
         from model_PNet import ParticleNet
 
-    ### set random seed
-    torch.manual_seed(args.seed)#+ rank)
-    np.random.seed(args.seed)#+ rank)
-
-    num_train = args.num_train
-    if num_train==-1:
-        num_test = -1
-        num_val = -1
-    else:
-        num_test = .2*num_train
-        num_val = num_test
-    num_pts={'train':num_train,'test':num_test,'valid':num_val}
-    is_target = [0, 1]
-    domains = ['Source', 'Target']
 
     #added for compatiblility with ParticleNet
     ###########################################
@@ -285,38 +274,9 @@ if __name__ == "__main__":
         #reg_params=[(1.7, 0.7), (2.0, 0.7), (-4.7, 0.7), (-4.7, 0.7), (0.2, 4.0)]
     ###########################################
 
-    #load data
-    datasets = dset.initialize_datasets(datadir=args.datadir, num_pts=num_pts, is_target=is_target, rank=rank, reg_params=reg_params, model=args.model)
-    num_pts = [num_pts]
-    num_pts.append(deepcopy(num_pts[0]))
-    # if (rank==0):
-    #     for n, s, d in zip(num_pts, is_target, domains):
-    #         print(f"Domain: {d}")
-    #         for (split, dataset) in datasets.items():
-    #             print('type of dataset', type(dataset))
-    #             n[split] = (dataset[0]['is_target']==s).size() + (dataset[1]['is_target']==s).size()[0]
-    #             print(f"{split} samples: {n[split]}")
-
-    ### FOR SLURM
-    ##########################
-    ### initialize cuda
-    dist.init_process_group(backend='nccl', rank=rank, world_size=world_size)
-    if rank == 0: print(f"Group initialized? {dist.is_initialized()}", flush=True)
-
-    torch.cuda.set_device(local_rank)
-    ##########################
-
-    #device = torch.device("cuda:{}".format(args.local_rank + first_device))
-    dtype = torch.float32
 
     ### create data loader
-    train_sampler, dataloaders = dset.retrieve_dataloaders(
-                                    datasets,
-                                    2*args.batch_size,
-                                    num_workers=num_workers,
-                                    rank=rank,
-                                    num_replicas=world_size,
-                                    collate_config=args.model)
+    
 
     if args.model=='LorentzNet':
         restart_epoch = 4

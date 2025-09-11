@@ -1,0 +1,53 @@
+{
+    "group_order": [
+        "backbone",
+        "encoder",
+        "classifier"
+    ],
+    "group_specs": {
+        "backbone": {
+            "conv_params": [
+                7,
+                [
+                    32,
+                    32,
+                    32
+                ]
+            ],
+            "fc_params": []
+        },
+        "encoder": {
+            "conv_params": [
+                7,
+                [
+                    64,
+                    64,
+                    64
+                ]
+            ],
+            "fc_params": [
+                [
+                    64,
+                    0
+                ],
+                [
+                    32,
+                    0
+                ]
+            ]
+        },
+        "classifier": {
+            "conv_params": [],
+            "fc_params": [
+                [
+                    32,
+                    0.1
+                ],
+                [
+                    32,
+                    0.1
+                ]
+            ]
+        }
+    }
+}
