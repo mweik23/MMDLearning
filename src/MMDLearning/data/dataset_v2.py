@@ -1,3 +1,4 @@
+from pyexpat import model
 import torch
 from torch.utils.data import DataLoader, ConcatDataset, Subset
 from torch.utils.data.distributed import DistributedSampler
@@ -7,16 +8,7 @@ import h5py, glob
 from . import JetDataset
 from copy import deepcopy
 
-def retrieve_dataloaders(datasets, batch_size, num_workers = 4, rank=None, num_replicas=None, collate_config='LorentzNet'):
-    # Initialize dataloader
-    
-    # if num_train==-1:
-    #     num_test=-1
-    #     num_val=-1
-    # else:
-    #     num_test= .2*num_train
-    #     num_val = num_test
-    # datasets = initialize_datasets(datadir, num_pts={'train':num_train,'test':num_test,'valid':num_val})
+def retrieve_dataloaders(datasets, batch_size, num_workers = 4, rank=None, num_replicas=None, model_arch='LorentzNet'):
 
     # distributed training
     if 'train' in datasets:
@@ -24,9 +16,9 @@ def retrieve_dataloaders(datasets, batch_size, num_workers = 4, rank=None, num_r
     else:
         train_sampler = None
     # Construct PyTorch dataloaders from datasets
-    if collate_config=='LorentzNet':
+    if model_arch=='LorentzNet':
         collate = lambda data: collate_fn(data, scale=1, add_beams=True, beam_mass=1) #TODO: update to give a sorted batch
-    elif collate_config=='ParticleNet' or collate_config=='ParticleNet-Lite':
+    elif model_arch=='ParticleNet' or model_arch=='ParticleNet-Lite':
         collate=collate_sorted
     dataloaders = {split: DataLoader(dataset,
                                      batch_size=batch_size if (split == 'train') else batch_size, # prevent CUDA memory exceeded
@@ -40,7 +32,7 @@ def retrieve_dataloaders(datasets, batch_size, num_workers = 4, rank=None, num_r
 
     return train_sampler, dataloaders
 
-def initialize_datasets(datadir='./data', num_pts=None, is_target=None, rank=0, reg_params=None, model='ParticleNet'):
+def initialize_datasets(datadir='./data', splits=['train', 'valid'], num_data=None, is_target=[0, 1], rank=0, tv_fracs=(0.8, 0.2), model='ParticleNet'):
     """
     Initialize datasets.
     """
@@ -48,12 +40,13 @@ def initialize_datasets(datadir='./data', num_pts=None, is_target=None, rank=0, 
         datadir = [datadir]
     if np.isscalar(is_target) or is_target is None:
         is_target=[is_target]
-    if type(num_pts)==dict:
-        num_pts = [num_pts]
-    elif num_pts is None:
-        num_pts=[{'train':-1,'test':-1,'valid':-1}]
+    if num_data == -1:
+        num_pts = {split:-1 for split in splits}
+    else:
+        num_pts = {split:int(num_data*frac) for split, frac in zip(splits, tv_fracs)}
     if len(datadir)==2 and len(num_pts)==1:
             num_pts.append(deepcopy(num_pts[0]))
+    #TODO:remove this
     if rank==0:    
         print('initialize datasets for datadir(s): ', *(d for d in datadir))
     ### ------ 1: Get the file names ------ ###
@@ -62,7 +55,6 @@ def initialize_datasets(datadir='./data', num_pts=None, is_target=None, rank=0, 
     # We will look for the keywords defined in splits to be be in the filenames, and will thus determine what
     # set each file belongs to.
         
-    splits = list(num_pts[0].keys()) # Our data categories -- training set, testing set and validation set
     patterns_all = {'train':'train', 'test':'test', 'valid':'val'} # Patterns to look for in data files, to identify which data category each belongs in
     patterns = {split: patterns_all[split] for split in splits}
 

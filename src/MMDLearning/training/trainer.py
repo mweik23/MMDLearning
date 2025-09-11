@@ -12,7 +12,7 @@ from schedulers import SchedConfig, make_scheduler
 #---------------------------------------------
 
 # put SRC on path
-SRC_DIR = (Path(__file__).parent).resolve()
+SRC_DIR = (Path(__file__).parents[1]).resolve()
 import sys
 sys.path.append(str(SRC_DIR))
 
