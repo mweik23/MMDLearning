@@ -1,5 +1,5 @@
 from qg import dataset
-from models import LorentzNet
+from src.MMDLearning.models.model_LNet import LorentzNet
 import torch
 from torch import nn, optim
 import argparse, json, time

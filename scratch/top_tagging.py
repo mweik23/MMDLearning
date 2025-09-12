@@ -1,5 +1,5 @@
 from src import dataset
-from models import psi, LorentzNet
+from src.MMDLearning.models.model_LNet import psi, LorentzNet
 import torch
 from torch import nn, optim
 import argparse, json, time

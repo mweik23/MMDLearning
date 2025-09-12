@@ -1,4 +1,4 @@
-from src import dataset_v2 as dset
+
 import torch
 from torch import nn, optim
 import argparse, json, time
@@ -12,11 +12,13 @@ from copy import deepcopy
 import os
 import matplotlib.pyplot as plt
 from pathlib import Path
-SRC_path = Path(__file__).parent.resolve() / 'src'
+SRC_path = Path(__file__).parents[1].resolve() / 'src' / 'MMDLearning'
 import sys
 sys.path.append(str(SRC_path))
-from MMDLearning.utils.distributed import setup_dist, DistInfo
-from MMDLearning.utils.io import config_init
+from utils.distributed import setup_dist, DistInfo
+from utils.io import config_init
+from models.predictors import build_predictor
+from data.dataset_v2 import initialize_datasets, retrieve_dataloaders
 
 def build_parser():
     parser = argparse.ArgumentParser(description='Top tagging')
@@ -96,8 +98,8 @@ def build_parser():
                         help='use batchnorm in eval mode')
     #added this input for compatibility with ParticleNet
     ############################################################
-    parser.add_argument('--model', type=str, default='LorentzNet', metavar='N',
-                        help='model_name')
+    parser.add_argument('--model_name', type=str, default='LorentzNet', metavar='N',
+                        help='model name')
     ############################################################                    
     parser.add_argument('--local_rank', type=int, default=0)
     
@@ -236,84 +238,54 @@ def main(argv=None):
     np.random.seed(cfg.seed)#+ rank)
     
     
-    datasets = dset.initialize_datasets(datadir=cfg.datadir, splits=['train', 'valid'], num_data=cfg.num_train, rank=dist_info.rank, model=cfg.model)
+    datasets = initialize_datasets(
+        datadir=cfg.datadir, 
+        splits=['train', 'valid'], 
+        num_data=cfg.num_train, 
+        rank=dist_info.rank, 
+        model=cfg.model_name)
     
-    train_sampler, dataloaders = dset.retrieve_dataloaders(
-                                    datasets,
-                                    2*args.batch_size,
-                                    num_workers=dist_info.num_workers,
-                                    rank=dist_info.rank,
-                                    num_replicas=dist_info.world_size,
-                                    model_arch=cfg.model)
+    train_sampler, dataloaders = retrieve_dataloaders(
+        datasets,
+        2*args.batch_size,
+        num_workers=dist_info.num_workers,
+        rank=dist_info.rank,
+        num_replicas=dist_info.world_size,
+        model_arch=cfg.model_name
+    )
     
     #load model config
     if cfg.model_config != '':     
         with open(cfg.model_config, 'r') as f:
             model_config = json.load(f)
     
+    # get model with predictor wrapper    
+    model = build_predictor(cfg.model_name, 
+                            input_dims=7, #TODO: get this from the dataset shape
+                            num_classes=2,
+                            cfg=model_config)
+    model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
+    model = model.to(device)
+    ddp_model = DistributedDataParallel(model, broadcast_buffers=True, device_ids=[dist_info.local_rank])
     
+    stage_param_groups = [
+        {
+            "params": list(model.stages[name].parameters()), 
+            "lr": specs['optim'].get('lr', model_config['defaults']['lr']),
+            "weight_decay": specs['optim'].get('weight_decay', model_config['defaults']['weight_decay']), 
+            "name": name}
+        for name, specs in cfg['group_specs'].items()
+    ]
+
 if __name__ == "__main__":
     main()
 
 
-    #added for compatibilty with ParticleNet
-    #######################################
-    if args.model=='LorentzNet':
-        from models import psi, LorentzNet
-    elif args.model=='ParticleNet' or args.model=='ParticleNet-Lite':
-        from model_PNet import ParticleNet
 
-
-    #added for compatiblility with ParticleNet
-    ###########################################
-    if args.model=='LorentzNet':
-        reg_params=None
-    elif args.model=='ParticleNet' or args.model=='ParticleNet-Lite':
-        #order of reg_params: logpt, logE, logpt_ptjet, logE_Ejet, DeltaR
-        reg_params=None
-        #reg_params=[(1.7, 0.7), (2.0, 0.7), (-4.7, 0.7), (-4.7, 0.7), (0.2, 4.0)]
-    ###########################################
-
-
-    ### create data loader
-    
-
-    if args.model=='LorentzNet':
-        restart_epoch = 4
-        ratio =1
-        if args.auto_scale:
-            ratio = num_pts[0]['train']/1.2e6
-            args.n_hidden = int(round(args.n_hidden*ratio**(1/3)))
-            args.n_layers = int(round(args.n_layers*ratio**(1/3)))
-            args.epochs = int(round(args.epochs/ratio**(1/2)))
-            args.warmup_epochs = int(round(args.warmup_epochs/ratio**(1/2)))
-            restart_epoch = int(round(restart_epoch/ratio**(1/2)))
-        if rank==0:
-            print('hidden: ', args.n_hidden)
-            print('layers: ', args.n_layers)
-            print('epochs: ', args.epochs)
-        model = LorentzNet(n_scalar = 2, n_hidden = args.n_hidden, n_class = 2,
-                       dropout = args.dropout, n_layers = args.n_layers,
-                       c_weight = args.c_weight, no_batchnorm=args.no_batchnorm, no_layernorm=args.no_layernorm)
-    else: 
-        if args.model=='ParticleNet':
-            kwargs={'fc_params': [(256, 0), (64, 0), (256, args.dropout)], 'conv_params': [(16, (64, 64, 64)),(16, (128, 128, 128)),(16, (256, 256, 256))]}
-        elif args.model=='ParticleNet-Lite': 
-            kwargs={'fc_params': [(128, 0), (32, 0), (128, args.dropout)], 'conv_params': [(7, (32, 32, 32)),(7, (64, 64, 64))]}
-
-        model = ParticleNet(7,
-        num_classes=2,
-        conv_params=kwargs.get('conv_params', None),
-        fc_params=kwargs.get('fc_params', None),
-        use_fusion=kwargs.get('use_fusion', False),
-        use_fts_bn=kwargs.get('use_fts_bn', True),
-        use_counts=kwargs.get('use_counts', True),
-        for_inference=kwargs.get('for_inference', False),
-        out_lyrs=[1, -1])
     if not args.no_batchnorm:
         if rank==0:
             print('converting batchnorm to sync_batchnorm') #can turn into comment once I confirm this works
-        model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
+        
     model = model.to(local_rank)
     #need broadcast_buffers=True for multi GPU training
     ddp_model = DistributedDataParallel(model, broadcast_buffers=True, device_ids=[local_rank])
