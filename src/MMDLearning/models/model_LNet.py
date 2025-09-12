@@ -104,6 +104,7 @@ class LorentzNet(nn.Module):
         - `c_weight` (float): weight c in the x_model.
         - `dropout`  (float): dropout rate.
     '''
+    #TODO: make all inputs optional
     def __init__(self, n_scalar, n_hidden, n_class = 2, n_layers = 6, c_weight = 1e-3, dropout = 0., no_batchnorm=True, no_layernorm=True):
         super(LorentzNet, self).__init__()
         self.n_hidden = n_hidden

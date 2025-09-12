@@ -367,9 +367,9 @@ class StageBlock(nn.Module):
 class GroupedParticleNet(nn.Module):
 
     def __init__(self,
-                 input_dims,
-                 num_classes,
-                 cfg,
+                 input_dims=7,
+                 num_classes=2,
+                 cfg=None,
                  use_fts_bn=True,
                  use_counts=True,
                  for_inference=False,

@@ -137,7 +137,7 @@ class Trainer:
             prepared = self.predictor.prepare_batch(data, self.local_rank, dtype=self.dtype)
             
             #forward pass
-            pred, encoded = self.predictor.forward(self.ddp_model, prepared)
+            pred, encoded = self.predictor.forward(self.ddp_model, prepared, intermediates=['encoder'])
             
             #get labels and masks
             label = prepared['is_signal'].to(self.local_rank, self.dtype).long()

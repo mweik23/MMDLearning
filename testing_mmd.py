@@ -110,9 +110,9 @@ if __name__=='__main__':
      #added for compatibilty with ParticleNet
     #######################################
     if pt_args['model']=='LorentzNet':
-        from models import psi, LorentzNet
+        from src.MMDLearning.models.model_LNet import psi, LorentzNet
     elif pt_args['model']=='ParticleNet' or pt_args['model']=='ParticleNet-Lite':
-        from model_PNet import ParticleNet
+        from src.MMDLearning.models.model_PNet import ParticleNet
     ### set random seed
     torch.manual_seed(args.seed) #+ rank)
     np.random.seed(args.seed) # + rank)
