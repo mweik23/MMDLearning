@@ -1,4 +1,5 @@
 
+from src.MMDLearning.training.schedulers import SchedConfig
 import torch
 from torch import nn, optim
 import argparse, json, time
@@ -19,7 +20,9 @@ from utils.distributed import setup_dist, DistInfo
 from utils.io import config_init
 from models.predictors import build_predictor
 from data.dataset_v2 import initialize_datasets, retrieve_dataloaders
-
+from utils.model_utils import print_stage_param_summary
+from training.schedulers import SchedConfig
+from training.losses import MMDLoss, RBF, MMDScheduler, LambdaAdjust
 def build_parser():
     parser = argparse.ArgumentParser(description='Top tagging')
     parser.add_argument('--exp_name', type=str, default='', metavar='N',
@@ -72,8 +75,10 @@ def build_parser():
                         help='patience for ReduceLROnPlateau scheduler')
     parser.add_argument('--patience', type=int, default=10, metavar='N',
                         help='learning rate scheduler')
-    parser.add_argument('--factor', type=float, default=0.1, metavar='N',
+    parser.add_argument('--reduce_factor', type=float, default=0.1, metavar='N',
                         help='factor for LR scheduler if reduce')
+    parser.add_argument('--starting_lr', type=float, default=0.1, metavar='N',
+                        help='starting learning rate factor for warmup')
     parser.add_argument('--MMDturnon_epoch', type=int, default=5, metavar='N',
                         help='epoch when MMD turns on')
     parser.add_argument('--MMD_coef', type=float, default=0, metavar='N',
@@ -266,8 +271,6 @@ def main(argv=None):
                             cfg=model_config)
     model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
     model = model.to(device)
-    ddp_model = DistributedDataParallel(model, broadcast_buffers=True, device_ids=[dist_info.local_rank])
-    
     stage_param_groups = [
         {
             "params": list(model.stages[name].parameters()), 
@@ -276,118 +279,40 @@ def main(argv=None):
             "name": name}
         for name, specs in cfg['group_specs'].items()
     ]
-
+    print_stage_param_summary(model, print_output = dist_info.is_primary)
+    optimizer = optim.AdamW(stage_param_groups)
+    ddp_model = DistributedDataParallel(model, broadcast_buffers=True, device_ids=[dist_info.local_rank])
+    
+    if cfg.pretrained != '':
+        start_epoch = load_ckp(f"{cfg.logdir}/{cfg.pretrained}/best-val-model.pt", ddp_model, optimizer = optimizer if cfg.ld_optim_state else None)
+    else:
+        start_epoch
+        
+    for g in optimizer.param_groups:
+        g.setdefault('initial_lr', g['lr'])
+        
+    sched_config = SchedConfig(
+        kind = "warmup_plateau",
+        lr_min=cfg.start_lr,
+        warmup_epochs = cfg.warmup_epochs,
+        mode = "min",
+        factor = cfg.reduce_factor,
+        patience = cfg.patience,
+    )
+    
+    mmd_sched = MMDScheduler(cfg.MMDturnon_epoch, cfg.MMDturnon_width)
+    
+    loss_fns = {
+        'bce': nn.CrossEntropyLoss(),
+        'mmd': MMDLoss()
+    }
+    
+    
 if __name__ == "__main__":
     main()
 
-
-
-    if not args.no_batchnorm:
-        if rank==0:
-            print('converting batchnorm to sync_batchnorm') #can turn into comment once I confirm this works
-        
-    model = model.to(local_rank)
-    #need broadcast_buffers=True for multi GPU training
-    ddp_model = DistributedDataParallel(model, broadcast_buffers=True, device_ids=[local_rank])
-
-    ### print model and data information
-    if (rank == 0):
-        pytorch_total_params = sum(p.numel() for p in ddp_model.parameters())
-        print("Network Size:", pytorch_total_params)
-
    
-    #optimizer.param_groups[0]['initial_lr'] = args.lr
-        #load pretrained model
-    if args.pretrained != '' and not args.test_mode:
-        if args.ld_optim_state:
-            optimizer = optim.AdamW(ddp_model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-            optim_init=optimizer
-        else:
-             ### optimizer
-            backbone = []
-            mmd_btlnck = []
-            classifier = []
-            for name, param in ddp_model.named_parameters():
-                if name.startswith('module.bn_fts') or name.startswith('module.edge_convs'):
-                    backbone.append(param)
-                    print('group: backbone')
-                elif name.startswith('module.fc_block.fc.0'):
-                    mmd_btlnck.append(param)
-                    print('group: mmd bottleneck')
-                elif name.startswith('module.fc_block.fc.1'):
-                    classifier.append(param)
-                    print('group: classifier')
-                else:
-                    print('param names did not match')
-                print(name, ' number of parameters: ', param.numel())
-            optimizer = optim.AdamW([
-            { "params": backbone, "lr": 1e-6 },
-            { "params": mmd_btlnck,     "lr": 1e-6 },
-            { "params": classifier, "lr": 1e-6}], weight_decay=args.weight_decay)
-            optim_init=None
-        print('loading pretrained model')
-        start_epoch = load_ckp(f"{args.logdir}/{pt_epoch}.pt", ddp_model, optimizer=optim_init)
-        #optimizer.param_groups[0]['initial_lr'] = optimizer.param_groups[0]['lr']
-        for group in optimizer.param_groups:
-            group['initial_lr'] = group['lr']
-        #best_model = torch.load(f"{args.logdir}/{args.pretrained}.pt", map_location=torch.cuda.set_device(local_rank))
-        #ddp_model.load_state_dict(best_model)
-        best_val_BCE = train_res_init['val_loss'][start_epoch-1]
-        print('best val BCE: ', best_val_BCE)
-    else:
-        start_epoch=0
-    print('start epoch: ', start_epoch)
-    ### lr scheduler
-    if args.pretrained!='':
-        #print('Learning rate (before scheduler definition): ', optimizer.param_groups[0]['lr'])
-        constant_steps = args.MMDturnon_epoch+args.MMDturnon_width
-        linear_steps = args.warmup_epochs-constant_steps
-        start_scale = 1
-        factors = [[start_scale, start_scale], [start_scale, args.final_scale]]
-        milestones = [[start_epoch, start_epoch+constant_steps], [start_epoch+constant_steps, start_epoch+constant_steps+linear_steps]]
-        post_train_lambda = src.ParticleNetLambda(factors, milestones, ['linear', 'linear'])
-        lambda_scheduler = LambdaLR(optimizer, post_train_lambda, last_epoch=start_epoch - 1)
-        reduce_scheduler = plateau_scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.3, patience=3, min_lr=1e-6, verbose=True)
-        #lr_scheduler = SequentialLR(optimizer, schedulers=[lambda_scheduler, reduce_scheduler], milestones=[start_epoch+args.warmup_epochs+1])
-        #print('Learning rate (after scheduler definition): ', optimizer.param_groups[0]['lr'])
-    else:
-        if args.lr_scheduler=='CosineAnealing':
-            base_scheduler = CosineAnnealingWarmRestarts(optimizer, restart_epoch, 2, verbose = False)
-            lr_scheduler = src.GradualWarmupScheduler(optimizer, multiplier=1,
-                                                    warmup_epoch=args.warmup_epochs,
-                                                    after_scheduler=base_scheduler) ## warmup
-        
-        elif args.lr_scheduler=='Reduce':
-            base_scheduler = ReduceLROnPlateau(optimizer, patience=args.patience, factor=args.factor) 
-            lr_scheduler = base_scheduler
-        elif args.lr_scheduler=='ParticleNet' or args.lr_scheduler=='ParticleNet-Lite':
-            if args.lr_scheduler=='ParticleNet':
-                LRs = [3e-4-args.warmup_epochs*5e-5, 3e-4, 3e-3, 3e-4, 5e-7]
-            else:
-                LRs = [5e-4-args.warmup_epochs*8e-5, 5e-4, 5e-3, 5e-4, 1e-6]
-            factors = [[LRs[i], LRs[i+1]] for i in range(len(LRs)-1)]
-            one_fifth = int((args.epochs-1-args.warmup_epochs)//5)
-            epochs_main = [[0, 2*one_fifth], [2*one_fifth, 4*one_fifth], [4*one_fifth, 5*one_fifth]]
-            epochs = [[0, args.warmup_epochs]]
-            for ep in epochs_main:
-                epochs.append([e+args.warmup_epochs for e in ep])
-            schedule_types = ['linear', 'linear', 'linear', 'exp']
-            pn_lambda = src.ParticleNetLambda(factors, epochs, schedule_types)
-            lr_scheduler = LambdaLR(optimizer, pn_lambda)
-        else:
-            print(args.lr_scheduler + " is not a valid learning rate scheduler")
-    loss_stats = {'init_MMD': 0.006, 'init_BCE': 0.27, 'lambda_adjust': (lambda x: 1)}
-    mmd_sched = src.MMDScheduler(args.MMDturnon_epoch, args.MMDturnon_width)
-    ### loss function
-    bce = nn.CrossEntropyLoss()
-    mmd = da.MMDLoss(kernel=da.RBF(n_kernels=args.n_kernels, device=local_rank))
-
-    ### initialize logs
-    res = {'epochs': [], 'lr' : [],
-           'train_time': [], 'val_time': [],  'train_BCE_loss': [], 
-           'train_MMD_loss': [], 'val_BCE_loss': [], 'val_MMD_loss': [], 'val_tot_loss': [],
-           'train_acc': [], 'val_acc': [], 'best_val': 1e30, 'best_epoch': 0}
-    val_logits = {'init': [], 'best': [], 'last': [[], []]}
+    
     if not args.test_mode:
         ### training and testing
         train(res)
