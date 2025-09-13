@@ -50,8 +50,8 @@ SchedConfig(
 @dataclass
 class SchedConfig:
     kind: Literal[
-        "cosine_warmup", "onecycle", "step", "multistep", "plateau"
-    ] = "cosine_warmup", "warmup_plateau"
+        "cosine_warmup", "onecycle", "step", "multistep", "plateau", "cosine_warmup"
+    ] =  "warmup_plateau"
     lr_min: float = 0.0
     warmup_epochs: int = 10
     step_size: int = 30
@@ -212,21 +212,6 @@ def buildROC(labels, score, targetEff=[0.3,0.5]):
     idx = [np.argmin(np.abs(tpr - Eff)) for Eff in targetEff]
     eB, eS = fpr[idx], tpr[idx]
     return fpr, tpr, threshold, eB, eS
-
-class MMDScheduler:
-
-    def __init__(self, turnon, width, coef=1):
-        self.turnon=turnon
-        self.width=width
-        self.coef = coef
-
-    def __call__(self, epoch):
-        if self.width>0:
-            return self.coef*(1+torch.tanh((torch.tensor(epoch)-self.turnon)/self.width))/2
-        elif self.width==0:
-            return self.coef*(epoch>=self.turnon)
-        else:
-            print('MMD scheduler width is not allowed to be negative')
 
 def make_chained(optimizer, factors, epochs):
     const_sched = ConstantLR(optimizer, factor=factors[0], total_iters=epochs)
