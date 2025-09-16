@@ -23,6 +23,8 @@ from data.dataset_v2 import initialize_datasets, retrieve_dataloaders
 from utils.model_utils import print_stage_param_summary
 from training.schedulers import SchedConfig
 from training.losses import MMDLoss, RBF, MMDScheduler, LambdaAdjust
+from training.trainer import Trainer
+
 def build_parser():
     parser = argparse.ArgumentParser(description='Top tagging')
     parser.add_argument('--exp_name', type=str, default='', metavar='N',
@@ -286,7 +288,7 @@ def main(argv=None):
     if cfg.pretrained != '':
         start_epoch = load_ckp(f"{cfg.logdir}/{cfg.pretrained}/best-val-model.pt", ddp_model, optimizer = optimizer if cfg.ld_optim_state else None)
     else:
-        start_epoch
+        start_epoch = 0
         
     for g in optimizer.param_groups:
         g.setdefault('initial_lr', g['lr'])
@@ -307,24 +309,29 @@ def main(argv=None):
         'mmd': MMDLoss()
     }
     
+    trainer = Trainer(
+        cfg=cfg,
+        ddp_model=ddp_model,
+        start_epoch=start_epoch,
+        optimizer=optimizer,
+        dist_info=dist_info,
+        device=device,
+        sched_config=sched_config,
+        loss_fns=loss_fns,
+        mmd_sched=mmd_sched,
+        train_sampler=train_sampler,
+        dataloaders=dataloaders
+    )
+    if not args.test_mode:
+        trainer.train()
+
+    trainer.test()
+    torch.cuda.empty_cache()
     
 if __name__ == "__main__":
     main()
 
    
     
-    if not args.test_mode:
-        ### training and testing
-        train(res)
-        if rank==0:
-            make_train_plt(res, args.pretrained != '')
-            print('shape val_logits components:')
-            print('init:', [l.size() for l in val_logits['init']])
-            print('best:', [l.size() for l in val_logits['best']])
-            make_logits_plt(val_logits)
-
-        test(res)
-    else:
-        ### only test on best model
-        test(res)
-    torch.cuda.empty_cache()
+    
+    

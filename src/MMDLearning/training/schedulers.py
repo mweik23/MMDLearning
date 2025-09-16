@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 from torch.optim.lr_scheduler import _LRScheduler, ReduceLROnPlateau, ConstantLR, ExponentialLR, ChainedScheduler, LinearLR
 import numpy as np
-from sklearn.metrics import roc_auc_score, roc_curve
 # types
 from dataclasses import dataclass
 from typing import Literal, Callable, Optional
@@ -199,19 +198,6 @@ class GradualWarmupScheduler(_LRScheduler):
         self.__dict__.update(state_dict)
         if after_scheduler_state:
             self.after_scheduler.load_state_dict(after_scheduler_state)
-
-def buildROC(labels, score, targetEff=[0.3,0.5]):
-    r''' ROC curve is a plot of the true positive rate (Sensitivity) in the function of the false positive rate
-    (100-Specificity) for different cut-off points of a parameter. Each point on the ROC curve represents a
-    sensitivity/specificity pair corresponding to a particular decision threshold. The Area Under the ROC
-    curve (AUC) is a measure of how well a parameter can distinguish between two diagnostic groups.
-    '''
-    if not isinstance(targetEff, list):
-        targetEff = [targetEff]
-    fpr, tpr, threshold = roc_curve(labels, score)
-    idx = [np.argmin(np.abs(tpr - Eff)) for Eff in targetEff]
-    eB, eS = fpr[idx], tpr[idx]
-    return fpr, tpr, threshold, eB, eS
 
 def make_chained(optimizer, factors, epochs):
     const_sched = ConstantLR(optimizer, factor=factors[0], total_iters=epochs)

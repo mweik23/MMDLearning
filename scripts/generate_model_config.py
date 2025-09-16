@@ -9,6 +9,16 @@ import sys
 sys.path.append(str(SRC_ROOT))
 from utils.io import check_path
 
+def str2bool(v):
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ("yes", "true", "t", "y", "1"):
+        return True
+    elif v.lower() in ("no", "false", "f", "n", "0"):
+        return False
+    else:
+        raise argparse.ArgumentTypeError("Boolean value expected.")
+
 if __name__=='__main__':
     default_lr = 1e-3
     default_wd = 1e-4
@@ -21,6 +31,7 @@ if __name__=='__main__':
     parser.add_argument('--lr', type=float, nargs='+', default=-1, help='learning rate for each group.')
     parser.add_argument('--weight_decay', type=float, nargs='+', default=-1, help='weight decay for each group.')
     parser.add_argument('--activation', type=str, nargs= '+', default='ReLU', help='Activation function to use in all groups (default ReLU).')
+    parser.add_argument("--freeze_bn", type=str2bool, nargs="+", default=[False], help="List of booleans (e.g., --freeze_bn true false true)")
     args = parser.parse_args()
     
     
@@ -32,6 +43,8 @@ if __name__=='__main__':
         args.weight_decay = [args.weight_decay]*len(args.group_names)
     if type(args.lr) is float:
         args.lr = [args.lr]*len(args.group_names)
+    if len(args.freeze_bn)==1:
+        args.freeze_bn = args.freeze_bn*len(args.group_names)
         
     arch_config = {
         "group_order": args.group_names,
@@ -39,8 +52,9 @@ if __name__=='__main__':
             gn: {
                 "conv_params":    conv if conv is not None else [],
                 "fc_params":    fc if fc is not None else [],
+                "freeze_bn":    freeze if freeze is not None else [],
                 "optim_params": {},
-            } for gn, conv, fc in zip(args.group_names, args.conv_params, args.fc_params)
+            } for gn, conv, fc, freeze in zip(args.group_names, args.conv_params, args.fc_params, args.freeze_bn)
         }
     }
     
