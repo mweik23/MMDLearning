@@ -8,6 +8,7 @@ from os import name
 import numpy as np
 import torch
 import torch.nn as nn
+from torch.nn.modules.batchnorm import _BatchNorm
 
 
 def knn(x, k):
@@ -274,15 +275,17 @@ class StageBlock(nn.Module):
     """
     def __init__(self,
                  input_dims,
-                 conv_params=None,
+                 conv_params=None,  
                  fc_params=None,
                  final_block=False,
                  num_classes=2,
                  aggregate=False,
                  init_block=False,
                  use_counts=True,
-                 for_inference=False):
+                 for_inference=False,
+                 freeze_bn=False):
         super().__init__()
+        self._freeze_bn = freeze_bn
         self.aggregate = aggregate
         self.use_counts = use_counts
         self.use_fts_bn = init_block
@@ -312,7 +315,20 @@ class StageBlock(nn.Module):
             self.mlp = build_mlp(mlp_input_dim, fc_params, final_block=self.final_block)
         self.conv_params = conv_params
         self.fc_params = fc_params
-        
+    
+    def _set_bn_eval(self):
+        for m in self.modules():
+            if isinstance(m, _BatchNorm):
+                m.eval()
+
+    def train(self, mode: bool = True):
+        # call parent first so all children get toggled
+        super().train(mode)
+        # then force BN back to eval if requested
+        if self._freeze_bn:
+            self._set_bn_eval()
+        return self
+    
     def _infer_output_info(self):
         if len(self.fc_params)>0:
             is_fc = True
@@ -389,6 +405,7 @@ class GroupedParticleNet(nn.Module):
         for i, name in enumerate(cfg['group_order']):
             conv_params = cfg['group_specs'][name]['conv_params']
             fc_params = cfg['group_specs'][name]['fc_params']
+            freeze_bn = cfg['group_specs'][name]['freeze_bn']
             self.stages[name] = StageBlock(
                 cur_dim,
                 conv_params = conv_params,
@@ -398,6 +415,7 @@ class GroupedParticleNet(nn.Module):
                 aggregate = (not seen_fc) and len(fc_params)>0,
                 init_block = (i==0),
                 for_inference = for_inference,
+                freeze_bn = freeze_bn
             )
             cur_dim, is_fc = self.stages[name]._infer_output_info()
             if is_fc:

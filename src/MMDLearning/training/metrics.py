@@ -1,5 +1,8 @@
 import torch
 from pathlib import Path
+from sklearn.metrics import roc_curve
+import numpy as np
+import matplotlib.pyplot as plt
 SRC_DIR = (Path(__file__).parent).resolve()
 import sys
 sys.path.append(str(SRC_DIR))
@@ -110,3 +113,32 @@ class RunningStats:
         self._last_time = self._initial_time 
         self._seen_batches = 0
         self._last_snap_batches = self._seen_batches
+
+def buildROC(labels, score, targetEff=[0.3,0.5]):
+    r''' ROC curve is a plot of the true positive rate (Sensitivity) in the function of the false positive rate
+    (100-Specificity) for different cut-off points of a parameter. Each point on the ROC curve represents a
+    sensitivity/specificity pair corresponding to a particular decision threshold. The Area Under the ROC
+    curve (AUC) is a measure of how well a parameter can distinguish between two diagnostic groups.
+    '''
+    if not isinstance(targetEff, list):
+        targetEff = [targetEff]
+    fpr, tpr, threshold = roc_curve(labels, score)
+    idx = [np.argmin(np.abs(tpr - Eff)) for Eff in targetEff]
+    eB, eS = fpr[idx], tpr[idx]
+    return fpr, tpr, threshold, eB, eS
+def make_roc_curve(fpr, tpr, domain='Source', ax=None):
+    if ax is None:
+        fig, ax = plt.subplots()
+    ax.plot(tpr[1:], 1/fpr[1:], label=domain)
+    return ax
+
+def get_test_metrics(labels, scores, **kwargs):
+    fpr, tpr, _, eB, eS = buildROC(labels, scores)
+    auc = np.trapz(tpr, fpr)
+    ax = make_roc_curve(fpr, tpr, **kwargs)
+    metrics = {
+        "eB": eB,
+        "eS": eS,
+        "auc": auc
+    }
+    return metrics, ax
