@@ -6,9 +6,9 @@ from typing import Dict, Any, Tuple
 
 # ----------- Model Registry (update as needed) -----------
 MODEL_REGISTRY = {
-    "particlenet-lite": "model_PNet:GroupedParticleNet",
-    "particlenet": "model_PNet:GroupedParticleNet",
-    "lorentznet": "model_LNet:LorentzNet",
+    "particlenet-lite": ".model_PNet:GroupedParticleNet",
+    "particlenet": ".model_PNet:GroupedParticleNet",
+    "lorentznet": ".model_LNet:LorentzNet",
 }
 #-----------------------------------------------------------
 class BasePredictor(nn.Module):
@@ -19,7 +19,7 @@ class BasePredictor(nn.Module):
     def _load_model(model_name: str, **kwargs):
         spec = MODEL_REGISTRY[model_name.lower()]
         module, cls = spec.split(":")
-        Mod = importlib.import_module(module)
+        Mod = importlib.import_module(module, package=__package__)
         ModelCls = getattr(Mod, cls)
         return ModelCls(**kwargs)
 
@@ -36,7 +36,7 @@ class ParticleNetPredictor(BasePredictor):
             "mask":     batch['label'].to(device, dtype),
             "is_signal": batch['is_signal'].to(device, dtype).long(),
             "is_target": batch['is_target'].to(device, dtype),
-            "n_s": batch['n_s'].to(device, dtype)
+            "n_s": batch['n_s']
         }
     def forward(self, p, **kw):
         pred, int_out = self.model(p["points"], p["features"], mask=p["mask"], **kw)

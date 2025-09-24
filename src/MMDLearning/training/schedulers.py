@@ -7,8 +7,8 @@ from dataclasses import dataclass
 from typing import Literal, Callable, Optional
 
 class WarmupThenPlateau:
-    def __init__(self, optimizer, *, warmup_steps:int|None=None, warmup_epochs:int|None=None,
-                 start_factor:float=0.0, end_factor:float=1.0, plateau_kwargs:dict|None=None):
+    def __init__(self, optimizer, *, warmup_steps:Optional[int]=None, warmup_epochs:Optional[int]=None,
+                 start_factor:float=0.0, end_factor:float=1.0, plateau_kwargs:Optional[dict]=None):
         plateau_kwargs = plateau_kwargs or dict(mode="min", factor=0.5, patience=5)
         assert (warmup_steps is None) ^ (warmup_epochs is None), "Specify steps OR epochs."
 
@@ -61,7 +61,7 @@ class SchedConfig:
     factor: float = 0.5
     patience: int = 5
 
-def make_scheduler(optimizer, cfg: SchedConfig, *, total_steps: int|None=None, steps_per_epoch: int=1):
+def make_scheduler(optimizer, cfg: SchedConfig, *, total_steps: Optional[int]=None, steps_per_epoch: int=1):
     if cfg.kind == "cosine_warmup":
         def lf(step):
             if step < cfg.warmup_steps:

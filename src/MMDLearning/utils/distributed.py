@@ -34,11 +34,11 @@ def globalize_epoch_totals(*,
 
 def epoch_metrics_from_globals(*, g_bce_sum: float, g_mmd_sum: float, g_correct: int, g_count: int):
     if g_count == 0:
-        return dict(bce=0.0, mmd=0.0, acc=0.0)
+        return dict(BCE_loss=0.0, MMD_loss=0.0, acc=0.0)
     return dict(
-        bce = g_bce_sum / g_count,
-        mmd = g_mmd_sum / g_count,
-        acc = g_correct / g_count,
+        BCE_loss=g_bce_sum / g_count,
+        MMD_loss=g_mmd_sum / g_count,
+        acc=g_correct / g_count,
     )
 
 @dataclass
@@ -169,7 +169,12 @@ def _choose_device(local_rank: int):
             return "cuda", name, True
     # Apple MPS (Apple Silicon)
     if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        return "mps", "MPS", False
+        try:
+            # quick runtime check: try to allocate
+            torch.zeros(1, device="mps")
+            return "mps", "MPS", False
+        except Exception:
+            pass  # fallback to CPU
     # CPU fallback
     return "cpu", "CPU", False
 

@@ -78,7 +78,7 @@ if __name__=='__main__':
         json.dump(arch_config, f, indent=4)
 
     #usage example
-    '''python
+    '''
     python generate_model_config.py --group_names backbone encoder classifier 
     --conv_params '[7, [32, 32, 32]]' '[7, [64, 64, 64]]' '[]' 
     --fc_params '[]' '[[64, 0], [32, 0]]' '[[32, 0.1], [32, 0.1]]'

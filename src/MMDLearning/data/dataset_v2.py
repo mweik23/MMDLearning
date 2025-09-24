@@ -2,13 +2,25 @@ from pyexpat import model
 import torch
 from torch.utils.data import DataLoader, ConcatDataset, Subset
 from torch.utils.data.distributed import DistributedSampler
-from collate import collate_fn, collate_sorted
+from .collate import collate_fn, collate_sorted
 import numpy as np 
 import h5py, glob
-from . import JetDataset
+from .jetdatasets import JetDataset
 from copy import deepcopy
 
-def retrieve_dataloaders(datasets, batch_size, num_workers = 4, rank=None, num_replicas=None, model_arch='LorentzNet'):
+def retrieve_dataloaders(do_MMD, datasets, batch_size, **kwargs):
+    dataloaders = []
+    # set up dataloaders
+    for dsets in datasets:
+        ts, dl = retrieve_individual_dataloaders(dsets,
+                                      2*batch_size if do_MMD else batch_size, 
+                                      **kwargs)
+        if ts is not None:
+            train_sampler = ts
+        dataloaders.append(dl)
+    return train_sampler, dataloaders
+
+def retrieve_individual_dataloaders(datasets, batch_size, num_workers = 4, rank=None, num_replicas=None, model_arch='LorentzNet'):
 
     # distributed training
     if 'train' in datasets:
@@ -32,7 +44,25 @@ def retrieve_dataloaders(datasets, batch_size, num_workers = 4, rank=None, num_r
 
     return train_sampler, dataloaders
 
-def initialize_datasets(datadir='./data', splits=['train', 'valid'], num_data=None, is_target=[0, 1], rank=0, tv_fracs=(0.8, 0.2), model='ParticleNet'):
+def create_dataset_args(train_cfg, **dataset_args):
+    dataset_args.setdefault("model", train_cfg.model_name)
+    dataset_args.setdefault("tv_fracs", {'train': 0.6, 'valid': 0.2})
+    dataset_args.setdefault("num_data", train_cfg.num_data)
+
+    if train_cfg.do_MMD:
+        dataset_args.setdefault("is_target", [0, 1])
+        dataset_args.setdefault("splits", ['train', 'valid'])
+        dataset_args.setdefault("datadir", train_cfg.datadir)
+        dataset_args = [dataset_args]
+    else:
+        dataset_args = [deepcopy(dataset_args) for _ in range(2)]
+        for i, da in enumerate(dataset_args):
+            da.setdefault("is_target", i) 
+            da.setdefault("splits", ['train', 'valid'] if i==0 else ['valid'])
+            da.setdefault("datadir", train_cfg.datadir[i])
+    return dataset_args
+
+def initialize_datasets(datadir='./data', splits=['train', 'valid'], num_data=None, is_target=[0, 1], tv_fracs={'train': 0.6, 'valid': 0.2}, model='ParticleNet'):
     """
     Initialize datasets.
     """
@@ -43,12 +73,10 @@ def initialize_datasets(datadir='./data', splits=['train', 'valid'], num_data=No
     if num_data == -1:
         num_pts = {split:-1 for split in splits}
     else:
-        num_pts = {split:int(num_data*frac) for split, frac in zip(splits, tv_fracs)}
-    if len(datadir)==2 and len(num_pts)==1:
-            num_pts.append(deepcopy(num_pts[0]))
-    #TODO:remove this
-    if rank==0:    
-        print('initialize datasets for datadir(s): ', *(d for d in datadir))
+        num_pts = {split:int(num_data*tv_fracs[split]) for split in splits}
+    if type(num_pts)==dict:
+        num_pts = 2*[deepcopy(num_pts)]
+        
     ### ------ 1: Get the file names ------ ###
     # datadir should be the directory in which the HDF5 files (e.g. out_test.h5, out_train.h5, out_valid.h5) reside.
     # There may be many data files, in some cases the test/train/validate sets may themselves be split across files.
@@ -59,7 +87,7 @@ def initialize_datasets(datadir='./data', splits=['train', 'valid'], num_data=No
     patterns = {split: patterns_all[split] for split in splits}
 
     files_set = [glob.glob(d + '/*.h5') for d in datadir]
-    datafiles_set = [{split:[] for split in splits} for d in datadir]
+    datafiles_set = [{split:[] for split in splits} for _ in datadir]
     nfiles_set = []
     for datafiles, files in zip(datafiles_set, files_set):
         for file in files:
@@ -71,7 +99,7 @@ def initialize_datasets(datadir='./data', splits=['train', 'valid'], num_data=No
     # There will be a JetDataset for each file, so we divide number of data points by number of files,
     # to get data points per file. (Integer division -> must be careful!)
     #TODO: nfiles > npoints might cause issues down the line, but it's an absurd use case
-    num_pts_per_file_set = [{} for d in datadir]
+    num_pts_per_file_set = [{} for _ in datadir]
     #TODO: continue with edits making everything compatible with having source and target
     for num_pts_per_file, num, nfiles in zip(num_pts_per_file_set, num_pts, nfiles_set):
         for split in splits:
@@ -113,12 +141,9 @@ def initialize_datasets(datadir='./data', splits=['train', 'valid'], num_data=No
     ### ------ 5: Initialize datasets ------ ###
     # Now initialize datasets based upon loaded data
 
-    torch_datasets = {split: ConcatDataset([JetDataset(data, num_pts=num_pts_per_file[split][idx], printout=[rank, split, idx]) for idx, data in enumerate(datasets[split])]) for split in splits}
+    print('num_pts_per_file: ', num_pts_per_file)
+    torch_datasets = {split: ConcatDataset([JetDataset(data, num_pts=num_pts_per_file[split][idx]) for idx, data in enumerate(datasets[split])]) for split in splits}
     torch_datasets = {split:Subset(dataset, torch.randperm(len(dataset))) for split, dataset in torch_datasets.items()}
-    #print('num_pts: ', num_pts)
-    #print('datafiles_set:', datafiles_set)
-    #print('num_pts_per_file_set: ', num_pts_per_file_set)
-    #print('num_pts_per_file: ', num_pts_per_file)
 
     return torch_datasets
 

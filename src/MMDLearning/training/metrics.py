@@ -3,6 +3,7 @@ from pathlib import Path
 from sklearn.metrics import roc_curve
 import numpy as np
 import matplotlib.pyplot as plt
+from typing import Any, Dict
 SRC_DIR = (Path(__file__).parent).resolve()
 import sys
 sys.path.append(str(SRC_DIR))
@@ -17,18 +18,25 @@ def get_correct(pred, label):
         return correct
     
 #masks controls the number of domains to calculate metrics for
-def get_batch_metrics(batch, loss_fns, use_tar_labels=False, domains=['Source']):
+def get_batch_metrics(batch, loss_fns, mmd_coef=1.0, use_tar_labels=False, domains=['Source']):
+    if type(domains) is str:
+        domains = [domains]
+    if 'mmd' in loss_fns:
+        if use_tar_labels:
+            mmd_val = (loss_fns['mmd'](batch['Source']['encoded'][batch['Source']['label']==0], batch['Target']['encoded'][batch['Target']['label']==0]) 
+                    + loss_fns['mmd'](batch['Source']['encoded'][batch['Source']['label']==1], batch['Target']['encoded'][batch['Target']['label']==1]))/2
+        else:
+            mmd_val = loss_fns['mmd'](batch['Source']['encoded'], batch['Target']['encoded'])
+    else:
+        mmd_val=None
     out = {d: {} for d in domains}
     for d in domains:
         out[d]['batch_size'] = batch[d]['label'].size(0)
         out[d]['correct'] = get_correct(batch[d]['pred'], batch[d]['label'])
-        out[d]['BCE loss'] = loss_fns['bce'](batch[d]['pred'], batch[d]['label'])
-    if use_tar_labels:
-        mmd_val = (loss_fns['mmd'](batch['Source']['encoded'][batch['Source']['label']==0], batch['Target']['encoded'][batch['Target']['label']==0]) 
-                   + loss_fns['mmd'](batch['Source']['encoded'][batch['Source']['label']==1], batch['Target']['encoded'][batch['Target']['label']==1]))/2
-    else:
-        mmd_val = loss_fns['mmd'](batch['Source']['encoded'], batch['Target']['encoded'])
-    return out, mmd_val
+        out[d]['BCE_loss'] = loss_fns['bce'](batch[d]['pred'], batch[d]['label'])
+        if mmd_val is not None:
+            out[d]['MMD_loss'] = mmd_val * mmd_coef
+    return out
 
 @dataclass
 class RunningStats:
@@ -49,16 +57,25 @@ class RunningStats:
         self.reset_epoch()
 
     # ---- per-batch update ----
-    def update(self, *, bce: float, mmd: float, correct: int, batch_size: int):
+    def update(self, *, BCE_loss: float, correct: int, batch_size: int, MMD_loss: Any = None):
+        #detach
+        BCE_loss = BCE_loss.detach().cpu().item()
+        correct = correct.detach().cpu().item()
+        batch_size = batch_size.detach().cpu().item()
+        if MMD_loss is not None:
+            MMD_loss = MMD_loss.detach().cpu().item()
+
         # window buffers
-        self._bce.append(float(bce))
-        self._mmd.append(float(mmd))
+        self._bce.append(float(BCE_loss))
+        if MMD_loss is not None:
+            self._mmd.append(float(MMD_loss))
         self._correct.append(int(correct))
         self._batch_sizes.append(int(batch_size))
         self._seen_batches += 1
         # epoch totals
-        self.epoch_bce_sum += float(bce) * int(batch_size)   # sample-weighted
-        self.epoch_mmd_sum += float(mmd) * int(batch_size)   # sample-weighted
+        self.epoch_bce_sum += float(BCE_loss) * int(batch_size)   # sample-weighted
+        if MMD_loss is not None:
+            self.epoch_mmd_sum += float(MMD_loss) * int(batch_size)   # sample-weighted
         self.epoch_correct += int(correct)
         self.epoch_count   += int(batch_size)
 
