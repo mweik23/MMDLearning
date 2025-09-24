@@ -6,7 +6,7 @@ class LossDict(TypedDict):
     mmd: torch.nn.Module
     label: str
 
-def split_batch(batch_vals, n_s, domains=['Source', 'Target']):
+def split_batch(batch_vals, n_s=None, domains=['Source', 'Target']):
     out = {}
     for d in domains:
         if d=='Source':

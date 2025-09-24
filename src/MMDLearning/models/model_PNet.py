@@ -9,6 +9,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.nn.modules.batchnorm import _BatchNorm
+from collections import OrderedDict
 
 
 def knn(x, k):
@@ -299,7 +300,7 @@ class StageBlock(nn.Module):
         if self.use_fts_bn:
             self.bn_fts = nn.BatchNorm1d(input_dims)
         self.edge_convs = nn.ModuleList()
-        
+        print('conv_params: ', conv_params)
         for idx, layer_param in enumerate(conv_params):
             k, channels = layer_param
             in_feat = input_dims if idx == 0 else conv_params[idx - 1][1][-1]
@@ -428,7 +429,7 @@ class GroupedParticleNet(nn.Module):
         x = features
         output = []
         for i, (name, stage) in enumerate(self.stages.items()):
-            x = stage(x, points = (points if i==0 else None))
+            x = stage(x, points = (points if i==0 else None), mask=mask)
             if name in intermediates:
                 output.append(x)
         return x, output
