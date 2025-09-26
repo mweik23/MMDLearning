@@ -1,4 +1,4 @@
-def print_stage_param_summary(model, print_ouput=False):
+def print_stage_param_summary(model):
     model_total = sum(p.numel() for p in model.parameters())
     model_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
@@ -19,5 +19,5 @@ def print_stage_param_summary(model, print_ouput=False):
     print(f"{'Model total':<15}{model_total:>15,}{model_trainable:>15,}")
 
     # Safety check
-    assert stage_total_sum == model_total, "Stage totals do not match model total!"
-    assert stage_trainable_sum == model_trainable, "Stage trainables do not match model trainables!"
+    assert stage_total_sum == model_total, f"Stage totals ({stage_total_sum}) do not match model total ({model_total})!"
+    assert stage_trainable_sum == model_trainable, f"Stage trainables ({stage_trainable_sum}) do not match model trainables ({model_trainable})!"

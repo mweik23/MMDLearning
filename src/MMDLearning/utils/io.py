@@ -4,6 +4,7 @@ import random
 import string
 import numpy as np
 import torch
+import shutil
 
 from dataclasses import dataclass, field
 
@@ -25,6 +26,11 @@ def makedir(path):
         except OSError:
             pass
 
+def make_clean_dir(path):
+    if os.path.exists(path):
+        shutil.rmtree(path)   # remove the directory and all its contents
+    os.makedirs(path) 
+    
 def load_ckp(checkpoint_fpath, model, optimizer=None, device=torch.device('cpu')):
     checkpoint = torch.load(checkpoint_fpath, map_location=device)
     model.load_state_dict(checkpoint['state_dict'])
@@ -53,7 +59,7 @@ class TrainingConfig:
         return dict(self._config)
 
 
-def config_init(args, dist_info, pt_overwrite_keys=['datadir', 'model']):
+def config_init(args, dist_info, project_root, pt_overwrite_keys=['datadir', 'model']):
     r''' Initialize seed and exp_name.
     '''
     if args.seed is None: # use random seed if not specified
@@ -61,6 +67,7 @@ def config_init(args, dist_info, pt_overwrite_keys=['datadir', 'model']):
     if args.exp_name == '': # use random strings if not specified
         args.exp_name = ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
     pt_args_overwrite = {}
+    args.logdir = str(project_root / args.logdir)
     if args.pretrained != '':
         if '/' in args.pretrained:
             pt_exp = args.pretrained.split('/')[0]
@@ -72,8 +79,7 @@ def config_init(args, dist_info, pt_overwrite_keys=['datadir', 'model']):
     pt_args_overwrite['do_MMD'] = args.MMD_frac > 0
     cfg = TrainingConfig.from_args_and_dist(args, dist_info, pt_args_overwrite)
     if (dist_info.rank == 0): # master
-        print(cfg)
-        makedir(f"{args.logdir}/{args.exp_name}")
+        make_clean_dir(f"{args.logdir}/{args.exp_name}")
         d = cfg.as_dict()
         with open(f"{args.logdir}/{args.exp_name}/config.json", 'w') as f:
             json.dump(d, f, indent=4)

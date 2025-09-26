@@ -7,7 +7,7 @@ from typing import Any
 import sys
 from pathlib import Path
 
-from metrics import get_batch_metrics
+from .metrics import get_batch_metrics
 
 SRC_PATH = Path(__file__).parents[1].resolve() 
 sys.path.append(str(SRC_PATH))
@@ -26,14 +26,14 @@ class SupervisedPolicy(TrainingPolicy):
 
     def compute_batch_metrics(self, *, data, model, state=None):
         #prepare the batch
-        prepared = model.prepare_batch(data, self.device, self.dtype)
+        prepared = model.module.prepare_batch(data, self.device, self.dtype)
 
         pred, = model(prepared)
 
         #get labels and masks
         label = prepared['is_signal'].to(self.device, self.dtype).long()
 
-        batch_output = {d: {'pred': pred, 'label': label} for d in state['track domains']}
+        batch_output = {d: {'pred': pred, 'label': label} for d in state['track_domains']}
 
         
         for d in state['get_buffers']:
@@ -43,7 +43,7 @@ class SupervisedPolicy(TrainingPolicy):
             )
 
         #calculate losses and metrics
-        batch_metrics = get_batch_metrics(batch_output, self.loss_fns, domains=state['track domains'])
+        batch_metrics = get_batch_metrics(batch_output, self.loss_fns, domains=state['track_domains'])
 
         tot_loss = batch_metrics['Source']['BCE_loss'] if 'Source' in batch_metrics else None
 
@@ -60,7 +60,7 @@ class MMDPolicy(TrainingPolicy):
 
     def compute_batch_metrics(self, *, data, model, state=None):
         #prepare the batch
-        prepared = model.prepare_batch(data, self.device, self.dtype)
+        prepared = model.module.prepare_batch(data, self.device, self.dtype)
 
         pred, encoded = model(prepared, intermediates=['encoder'])
 
@@ -77,7 +77,7 @@ class MMDPolicy(TrainingPolicy):
             )
 
         #calculate losses and metrics
-        batch_metrics = get_batch_metrics(batch_output, self.loss_fns, mmd_coef=self.MMD_frac*state['mmd_norm'], domains=state['track domains'])
+        batch_metrics = get_batch_metrics(batch_output, self.loss_fns, mmd_coef=self.MMD_frac*state['mmd_norm'], domains=state['track_domains'])
 
         mmd_scale = self.mmd_sched(state['epochs_completed']) if state['phase']=='train' else 1
 

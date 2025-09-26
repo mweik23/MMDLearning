@@ -28,7 +28,7 @@ class MetricHistory:
     def append(self, **kwargs):
         # usage: history.append(train_loss=0.23, val_loss=0.31, train_acc=0.88)
         for k, v in kwargs.items():
-            self.storage.setdefault(k, []).append(float(v))
+            self.storage.setdefault(k, []).append(v)
             
     def update(self, **kwargs):
         for k, v in kwargs.items():

@@ -24,32 +24,14 @@ def build_parser():
                         help='how many batches to wait before calculating the null MMD')
     parser.add_argument('--val_interval', type=int, default=1, metavar='N',
                         help='how many epochs to wait before validation')
-    parser.add_argument('--datadir', nargs='+', default='./data/top', metavar='N',
+    parser.add_argument('--datadir', nargs='+', default='data/top', metavar='N',
                         help='data directories')
-    parser.add_argument('--logdir', type=str, default='./logs/top', metavar='N',
+    parser.add_argument('--logdir', type=str, default='logs/top', metavar='N',
                         help='folder to output logs')
-    parser.add_argument('--dropout', type=float, default=0.2, metavar='N',
-                        help='dropout probability')
     parser.add_argument('--peak_lr', type=float, default=1e-3, metavar='N',
                         help='learning rate')
-    parser.add_argument('--final_scale', type=float, default=50, metavar='N',
-                        help='max learning rate scale')
-    parser.add_argument('--n_hidden', type=int, default=72, metavar='N',
-                        help='dim of latent space')
-    parser.add_argument('--n_layers', type=int, default=6, metavar='N',
-                        help='number of LGEBs')
     parser.add_argument('--num_workers', type=int, default=None, metavar='N',
                         help='number of workers for the dataloader')
-    parser.add_argument('--weight_decay', type=float, default=1e-2, metavar='N',
-                        help='weight decay')
-    parser.add_argument('--no_batchnorm', action='store_true', default=False,
-                        help = 'test best model')
-    parser.add_argument('--no_layernorm', action='store_true', default=False,
-                        help = 'remove batchnorm layers')
-    parser.add_argument('--auto_scale', action='store_true', default=False,
-                        help = 'scale network and epochs with amount of data')
-    parser.add_argument('--lr_scheduler', type=str, default='CosineAnealing', metavar='N',
-                        help='patience for ReduceLROnPlateau scheduler')
     parser.add_argument('--patience', type=int, default=10, metavar='N',
                         help='learning rate scheduler')
     parser.add_argument('--reduce_factor', type=float, default=0.1, metavar='N',
@@ -58,8 +40,6 @@ def build_parser():
                         help='starting learning rate factor for warmup')
     parser.add_argument('--MMDturnon_epoch', type=int, default=5, metavar='N',
                         help='epoch when MMD turns on')
-    parser.add_argument('--MMD_coef', type=float, default=0, metavar='N',
-                        help='prefactor for the MMD loss term')
     parser.add_argument('--MMD_frac', type=float, default=0, metavar='N',
                         help='prefactor for the MMD loss term')
     parser.add_argument('--MMDturnon_width', type=int, default=5, metavar='N',
@@ -72,10 +52,6 @@ def build_parser():
                         help='number of kernels summed for MMD kernel')
     parser.add_argument('--use_tar_labels', action='store_true', default=False,
                         help = 'Use target labels for MMD')
-    parser.add_argument('--bn_eval', action='store_true', default=False,
-                        help='use batchnorm in eval mode')
-    #added this input for compatibility with ParticleNet
-    ############################################################
     parser.add_argument('--model_name', type=str, default='LorentzNet', metavar='N',
                         help='model name')
     ############################################################                    

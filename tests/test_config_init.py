@@ -17,6 +17,6 @@ def test_config_init(tmp_path):
     dist_info = setup_dist(arg_num_workers=args.num_workers)
     assert dist_info.device_type in ['mps', 'cpu', 'cuda'], f"Unexpected device name: {dist_info.device_type}"
     #set up training configuration
-    cfg = config_init(args, dist_info)
+    cfg = config_init(args, dist_info, PROJECT_ROOT)
     print ('saved to: ', tmp_path)
     print(cfg.as_dict())
