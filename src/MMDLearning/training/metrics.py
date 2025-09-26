@@ -3,11 +3,7 @@ from pathlib import Path
 from sklearn.metrics import roc_curve
 import numpy as np
 import matplotlib.pyplot as plt
-from typing import Any, Dict
-SRC_DIR = (Path(__file__).parent).resolve()
-import sys
-sys.path.append(str(SRC_DIR))
-import MMDLearning.utils.distributed as dist
+from typing import Any
 from collections import deque
 from dataclasses import dataclass
 import time
@@ -60,8 +56,6 @@ class RunningStats:
     def update(self, *, BCE_loss: float, correct: int, batch_size: int, MMD_loss: Any = None):
         #detach
         BCE_loss = BCE_loss.detach().cpu().item()
-        correct = correct.detach().cpu().item()
-        batch_size = batch_size.detach().cpu().item()
         if MMD_loss is not None:
             MMD_loss = MMD_loss.detach().cpu().item()
 
@@ -146,16 +140,14 @@ def buildROC(labels, score, targetEff=[0.3,0.5]):
 def make_roc_curve(fpr, tpr, domain='Source', ax=None):
     if ax is None:
         fig, ax = plt.subplots()
-    ax.plot(tpr[1:], 1/fpr[1:], label=domain)
+    mask = fpr>0
+    ax.plot(tpr[mask], 1/(fpr[mask]), label=domain)
     return ax
 
-def get_test_metrics(labels, scores, **kwargs):
-    fpr, tpr, _, eB, eS = buildROC(labels, scores)
+def get_test_metrics(labels, scores, targetEff=[0.3, 0.5], **kwargs):
+    fpr, tpr, _, eB, eS = buildROC(labels, scores, targetEff=targetEff)
     auc = np.trapz(tpr, fpr)
     ax = make_roc_curve(fpr, tpr, **kwargs)
-    metrics = {
-        "eB": eB,
-        "eS": eS,
-        "auc": auc
-    }
+    metrics = {f'1/eB ~ {eff}': 1/eB[i] for i, eff in enumerate(targetEff)}
+    metrics['auc'] = auc
     return metrics, ax

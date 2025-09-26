@@ -282,6 +282,7 @@ class StageBlock(nn.Module):
                  num_classes=2,
                  aggregate=False,
                  init_block=False,
+                 use_fts_bn=True,
                  use_counts=True,
                  for_inference=False,
                  freeze_bn=False):
@@ -289,7 +290,7 @@ class StageBlock(nn.Module):
         self._freeze_bn = freeze_bn
         self.aggregate = aggregate
         self.use_counts = use_counts
-        self.use_fts_bn = init_block
+        self.use_fts_bn = use_fts_bn
         self.init_block = init_block
         self.final_block = final_block
         self.input_dims = input_dims
@@ -297,7 +298,7 @@ class StageBlock(nn.Module):
         
         conv_params = list(conv_params or [])
         fc_params = list(fc_params or [])
-        if self.use_fts_bn:
+        if self.init_block and self.use_fts_bn:
             self.bn_fts = nn.BatchNorm1d(input_dims)
         self.edge_convs = nn.ModuleList()
         print('conv_params: ', conv_params)
@@ -394,8 +395,6 @@ class GroupedParticleNet(nn.Module):
         super(GroupedParticleNet, self).__init__(**kwargs)
 
         self.use_fts_bn = use_fts_bn
-        if self.use_fts_bn:
-            self.bn_fts = nn.BatchNorm1d(input_dims)
 
         self.use_counts = use_counts
         num_stages = len(cfg['group_order'])
@@ -415,6 +414,7 @@ class GroupedParticleNet(nn.Module):
                 num_classes = num_classes,
                 aggregate = (not seen_fc) and len(fc_params)>0,
                 init_block = (i==0),
+                use_fts_bn = self.use_fts_bn,
                 for_inference = for_inference,
                 freeze_bn = freeze_bn
             )

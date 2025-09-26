@@ -1,5 +1,4 @@
 # src/yourpkg/models/predictors.py
-import torch
 import torch.nn as nn
 import importlib
 from typing import Dict, Any, Tuple
@@ -27,6 +26,10 @@ class ParticleNetPredictor(BasePredictor):
     def __init__(self, model_name: str = 'ParticleNet', **model_kwargs):
         super().__init__()
         self.model = self._load_model(model_name, **model_kwargs)
+    
+    @property
+    def stages(self):
+        return self.model.stages
     
     @staticmethod  
     def prepare_batch(batch, device, dtype):

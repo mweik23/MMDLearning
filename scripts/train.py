@@ -2,13 +2,12 @@ import torch
 from torch import nn, optim
 import argparse, json
 import numpy as np
-from torch.nn.parallel import DistributedDataParallel
 import matplotlib.pyplot as plt
 from pathlib import Path
 SRC_path = Path(__file__).parents[1].resolve() / 'src' / 'MMDLearning'
 import sys
 sys.path.append(str(SRC_path))
-from utils.distributed import setup_dist, DistInfo
+from utils.distributed import setup_dist, DistInfo, wrap_like_ddp, maybe_convert_syncbn
 from utils.io import config_init, load_ckp
 from utils.cli import build_parser
 from models.predictors import make_predictor
@@ -36,17 +35,16 @@ def main(argv=None):
     if dist_info.is_primary:
         print(dist_info)
     device = torch.device(dist_info.device_type)
-    dtype = torch.float32
     
     #set up training configuration
-    cfg = config_init(args, dist_info)
-    
+    cfg = config_init(args, dist_info, PROJECT_ROOT)
+
     ### set random seed
     torch.manual_seed(cfg.seed)#+ rank)
     np.random.seed(cfg.seed)#+ rank)
     
     #load data sets
-    dataset_args = create_dataset_args(cfg)
+    dataset_args = create_dataset_args(cfg, PROJECT_ROOT)
     datasets = [initialize_datasets(**d_args) for d_args in dataset_args]
     train_sampler, dataloaders = retrieve_dataloaders(cfg.do_MMD, datasets, cfg.batch_size,
                                                       num_workers=dist_info.num_workers,
@@ -55,29 +53,31 @@ def main(argv=None):
                                                       model_arch=cfg.model_name)
     
     #load model config
-    if cfg.model_config != '':     
+    if cfg.model_config != '':
         with open(PROJECT_ROOT / 'model_configs' / cfg.model_config, 'r') as f:
             model_config = json.load(f)
     
     # get model with predictor wrapper    
-    model = make_predictor(cfg.model_name, 
+    model = make_predictor(cfg.model_name,
                             input_dims=7, #TODO: get this from the dataset shape
                             num_classes=2,
                             cfg=model_config)
-    model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
+    
+    model = maybe_convert_syncbn(model, dist_info.device_type, dist_info.world_size)
     model = model.to(device)
     stage_param_groups = [{
             "params": list(model.stages[name].parameters()), 
-            "lr": specs['optim'].get('lr', model_config['defaults']['lr'])*cfg.peak_lr,
-            "weight_decay": specs['optim'].get('weight_decay', model_config['defaults']['weight_decay']), 
+            "lr": specs['optim_params'].get('lr', model_config['defaults']['lr'])*cfg.peak_lr,
+            "weight_decay": specs['optim_params'].get('weight_decay', model_config['defaults']['weight_decay']), 
             "name": name
         }
-        for name, specs in cfg['group_specs'].items()
+        for name, specs in model_config['group_specs'].items()
     ]
-    print_stage_param_summary(model, print_output = dist_info.is_primary)
+    if dist_info.is_primary:
+        print_stage_param_summary(model)
     optimizer = optim.AdamW(stage_param_groups)
-    ddp_model = DistributedDataParallel(model, broadcast_buffers=True, device_ids=[dist_info.local_rank])
-    
+    ddp_model = wrap_like_ddp(model, device, dist_info.local_rank, use_ddp=(dist_info.world_size>1))
+
     if cfg.pretrained != '':
         start_epoch = load_ckp(f"{cfg.logdir}/{cfg.pretrained}/best-val-model.pt",
                                ddp_model,
@@ -115,9 +115,11 @@ def main(argv=None):
         loss_fns=loss_fns,
         mmd_sched=mmd_sched,
         train_sampler=train_sampler,
-        dataloaders=dataloaders,
-        dtype=dtype
+        dataloaders=dataloaders
     )
+    
+    #for n,m in ddp_model.named_modules():
+    #    pass
     if not args.test_mode:
         trainer.train()
 

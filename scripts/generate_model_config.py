@@ -79,8 +79,8 @@ if __name__=='__main__':
 
     #usage example
     '''
-    python generate_model_config.py --group_names backbone encoder classifier 
-    --conv_params '[7, [32, 32, 32]]' '[7, [64, 64, 64]]' '[]' 
-    --fc_params '[]' '[[64, 0], [32, 0]]' '[[32, 0.1], [32, 0.1]]'
-    --lr 1e-5 1e-4 1e-3 --weight_decay 1e-4 1e-4 1e-4
+    python scripts/generate_model_config.py --group_names backbone encoder classifier 
+    --conv_params '[[7, [32, 32, 32]]]' '[[7, [64, 64, 64]]]' '[]' 
+    --fc_params '[]' '[[64, 0], [32, 0]]' '[[32, 0.1], [32, 0.1]]' 
+    --lr 1e-2 1e-1 1 --weight_decay 1e-4 1e-4 1e-4
     '''

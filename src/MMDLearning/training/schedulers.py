@@ -20,19 +20,21 @@ class WarmupThenPlateau:
         self.mode = plateau_kwargs.get("mode", "min")
 
     def step_batch(self):
-        if self.per_step and self.warmup._last_epoch < self.warmup.total_iters:
+        if self.per_step and self.warmup.last_epoch < self.warmup.total_iters:
             self.warmup.step()
             
     #call one step before the first epoch
     def step_epoch(self, val_metric: float = None):
-        if not self.per_step and self.warmup._last_epoch < self.warmup.total_iters:
+        if not self.per_step and self.warmup.last_epoch < self.warmup.total_iters:
             self.warmup.step()
         else:
             if val_metric is None:
                 if self.mode == "min":
                     val_metric = float('inf')
-                else:
+                elif self.mode == 'max':
                     val_metric = float('-inf')
+                else:
+                    raise ValueError(f"Unknown mode {self.mode} for ReduceLROnPlateau")
             self.plateau.step(val_metric)
 '''
 call for WarmupThenPlateau::

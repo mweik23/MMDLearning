@@ -23,8 +23,8 @@ def test(tmp_path, mmd_frac):
     target_thresh = 4
     #get arguments
     cli = f'--exp_name {str(tmp_path)} --model_name ParticleNet-Lite --model_config config_002.json '\
-        + f'--batch_size {batch_size} --MMD_frac {mmd_frac} --seed 42 --num_data 500 --datadir ./data/datasets_Pnet100_Njets1000/py83 '\
-        + f'./data/datasets_Pnet100_Njets1000/hw72'
+        + f'--batch_size {batch_size} --MMD_frac {mmd_frac} --seed 42 --num_data 500 --datadir data/datasets_Pnet100_Njets1000/py83 '\
+        + f'data/datasets_Pnet100_Njets1000/hw72'
     cli_split = cli.split(' ')
     print(cli_split)
 
@@ -39,7 +39,7 @@ def test(tmp_path, mmd_frac):
     dtype = torch.float32
     
     #set up training configuration
-    cfg = config_init(args, dist_info)
+    cfg = config_init(args, dist_info, PROJECT_ROOT)
     assert cfg.do_MMD == (mmd_frac>0), f"cfg.do_MMD {cfg.do_MMD} inconsistent with mmd_frac {mmd_frac}"
     
     ### set random seed
@@ -47,7 +47,7 @@ def test(tmp_path, mmd_frac):
     np.random.seed(cfg.seed)#+ rank)
     
     #load data sets
-    dataset_args = create_dataset_args(cfg)
+    dataset_args = create_dataset_args(cfg, PROJECT_ROOT)
     datasets = [initialize_datasets(**d_args) for d_args in dataset_args]
     _, dataloaders = retrieve_dataloaders(cfg.do_MMD, datasets, cfg.batch_size,
                                                       num_workers=dist_info.num_workers,

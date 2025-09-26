@@ -1,10 +1,13 @@
 import torch
+from torch import nn
 import torch.distributed as dist
 import os
 import socket
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, Sequence
 import multiprocessing as mp
+from torch.nn.parallel import DistributedDataParallel
+import contextlib
 
 def is_dist() -> bool:
     return dist.is_available() and dist.is_initialized()
@@ -154,7 +157,7 @@ def _infer_node_rank():
     # Fallback
     return 0
 
-def _choose_device(local_rank: int):
+def _choose_device(local_rank: int, world_size: int) -> tuple[str, str, bool]:
     # CUDA takes precedence
     if torch.cuda.is_available():
         num = torch.cuda.device_count()
@@ -167,7 +170,8 @@ def _choose_device(local_rank: int):
                 torch.cuda.set_device(0)
             name = torch.cuda.get_device_name(torch.cuda.current_device())
             return "cuda", name, True
-    # Apple MPS (Apple Silicon)
+    if world_size > 1 or os.getenv("FORCE_CPU", "0") == "1":
+        return "cpu", "CPU", False
     if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         try:
             # quick runtime check: try to allocate
@@ -294,7 +298,7 @@ def setup_dist(arg_num_workers: Optional[int] = None) -> DistInfo:  # NEW: optio
     node_rank = _infer_node_rank()
     master_addr, master_port = _resolve_master()
 
-    device_type, device_name, has_cuda = _choose_device(local_rank)
+    device_type, device_name, has_cuda = _choose_device(local_rank, world_size)
     backend = _choose_backend(device_type)
 
     try:
@@ -325,3 +329,30 @@ def setup_dist(arg_num_workers: Optional[int] = None) -> DistInfo:  # NEW: optio
         cpu_affinity_count=cpu_affinity,
     )
 
+class DDPShim(nn.Module):
+    def __init__(self, module: nn.Module):
+        super().__init__()
+        self.module = module           # <- register child under 'module'
+
+    def forward(self, *args, **kwargs):
+        return self.module(*args, **kwargs)
+
+    def no_sync(self):
+        return contextlib.nullcontext()
+
+def wrap_like_ddp(model: torch.nn.Module, device: torch.device, local_rank: int, use_ddp: bool):
+    if use_ddp and device.type in {"cuda", "cpu"}:
+        # CUDA: set device_ids; CPU: device_ids=None and backend="gloo"
+        return DistributedDataParallel(model, device_ids=[local_rank] if device.type=="cuda" else None,
+                   broadcast_buffers=True)
+    else:
+        return DDPShim(model)
+
+def maybe_convert_syncbn(model, device_type: str, world_size: int, process_group=None):
+    # Only convert when actually doing multi-process CUDA DDP
+    if device_type == "cuda" and world_size > 1:
+        # Make sure the process group is initialized before first forward
+        if process_group is None and dist.is_available() and dist.is_initialized():
+            process_group = dist.group.WORLD
+        model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model, process_group=process_group)
+    return model

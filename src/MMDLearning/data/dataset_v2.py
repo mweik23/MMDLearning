@@ -44,7 +44,7 @@ def retrieve_individual_dataloaders(datasets, batch_size, num_workers = 4, rank=
 
     return train_sampler, dataloaders
 
-def create_dataset_args(train_cfg, **dataset_args):
+def create_dataset_args(train_cfg, project_root, **dataset_args):
     dataset_args.setdefault("model", train_cfg.model_name)
     dataset_args.setdefault("tv_fracs", {'train': 0.6, 'valid': 0.2})
     dataset_args.setdefault("num_data", train_cfg.num_data)
@@ -52,17 +52,17 @@ def create_dataset_args(train_cfg, **dataset_args):
     if train_cfg.do_MMD:
         dataset_args.setdefault("is_target", [0, 1])
         dataset_args.setdefault("splits", ['train', 'valid'])
-        dataset_args.setdefault("datadir", train_cfg.datadir)
+        dataset_args.setdefault("datadir", [str(project_root / d) for d in train_cfg.datadir])
         dataset_args = [dataset_args]
     else:
         dataset_args = [deepcopy(dataset_args) for _ in range(2)]
         for i, da in enumerate(dataset_args):
             da.setdefault("is_target", i) 
             da.setdefault("splits", ['train', 'valid'] if i==0 else ['valid'])
-            da.setdefault("datadir", train_cfg.datadir[i])
+            da.setdefault("datadir", str(project_root / train_cfg.datadir[i]))
     return dataset_args
 
-def initialize_datasets(datadir='./data', splits=['train', 'valid'], num_data=None, is_target=[0, 1], tv_fracs={'train': 0.6, 'valid': 0.2}, model='ParticleNet'):
+def initialize_datasets(datadir='data', splits=['train', 'valid'], num_data=None, is_target=[0, 1], tv_fracs={'train': 0.6, 'valid': 0.2}, model='ParticleNet'):
     """
     Initialize datasets.
     """
