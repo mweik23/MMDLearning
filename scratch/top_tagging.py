@@ -1,9 +1,9 @@
-from top import dataset
-from models import psi, LorentzNet
+from src import dataset
+from src.MMDLearning.models.model_LNet import psi, LorentzNet
 import torch
 from torch import nn, optim
 import argparse, json, time
-import utils
+import src
 import numpy as np
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
@@ -102,9 +102,9 @@ def run(epoch, loader, partition):
             running_loss = sum(res['loss_arr'][-args.log_interval:])/len(res['loss_arr'][-args.log_interval:])
             running_acc = sum(res['correct_arr'][-args.log_interval:])/(len(res['correct_arr'][-args.log_interval:])*batch_size)
             avg_time = res['time']/res['counter'] * batch_size
-            tmp_counter = utils.sum_reduce(res['counter'], device = device)
-            tmp_loss = utils.sum_reduce(res['loss'], device = device) / tmp_counter
-            tmp_acc = utils.sum_reduce(res['correct'], device = device) / tmp_counter
+            tmp_counter = src.sum_reduce(res['counter'], device = device)
+            tmp_loss = src.sum_reduce(res['loss'], device = device) / tmp_counter
+            tmp_acc = src.sum_reduce(res['correct'], device = device) / tmp_counter
             if (args.local_rank == 0):
                 print(">> %s \t Epoch %d/%d \t Batch %d/%d \t Loss %.4f \t Running Acc %.3f \t Total Acc %.3f \t Avg Batch Time %.4f" %
                      (partition, epoch + 1, args.epochs, i, loader_length, running_loss, running_acc, tmp_acc, avg_time))
@@ -115,9 +115,9 @@ def run(epoch, loader, partition):
         res['label'] = torch.cat(res['label']).unsqueeze(-1)
         res['score'] = torch.cat(res['score'])
         res['score'] = torch.cat((res['label'],res['score']),dim=-1)
-    res['counter'] = utils.sum_reduce(res['counter'], device = device).item()
-    res['loss'] = utils.sum_reduce(res['loss'], device = device).item() / res['counter']
-    res['acc'] = utils.sum_reduce(res['correct'], device = device).item() / res['counter']
+    res['counter'] = src.sum_reduce(res['counter'], device = device).item()
+    res['loss'] = src.sum_reduce(res['loss'], device = device).item() / res['counter']
+    res['acc'] = src.sum_reduce(res['correct'], device = device).item() / res['counter']
     return res
 
 def train(res):
@@ -180,8 +180,8 @@ def test(res):
 
     if (args.local_rank == 0):
         np.save(f"{args.logdir}/{args.exp_name}/score.npy",pred)
-        fpr, tpr, thres, eB, eS  = utils.buildROC(pred[...,0], pred[...,2])
-        auc = utils.roc_auc_score(pred[...,0], pred[...,2])
+        fpr, tpr, thres, eB, eS  = src.buildROC(pred[...,0], pred[...,2])
+        auc = src.roc_auc_score(pred[...,0], pred[...,2])
 
         metric = {'test_loss': test_res['loss'], 'test_acc': test_res['acc'],
                   'test_auc': auc, 'test_1/eB_0.3':1./eB[0],'test_1/eB_0.5':1./eB[1]}
@@ -195,7 +195,7 @@ def test(res):
 if __name__ == "__main__":
     ### initialize args
     args = parser.parse_args()
-    utils.args_init(args)
+    src.args_init(args)
 
     ### set random seed
     torch.manual_seed(args.seed + args.local_rank)
@@ -234,7 +234,7 @@ if __name__ == "__main__":
 
     ### lr scheduler
     base_scheduler = CosineAnnealingWarmRestarts(optimizer, 4, 2, verbose = False)
-    lr_scheduler = utils.GradualWarmupScheduler(optimizer, multiplier=1,
+    lr_scheduler = src.GradualWarmupScheduler(optimizer, multiplier=1,
                                                 warmup_epoch=args.warmup_epochs,
                                                 after_scheduler=base_scheduler) ## warmup
 
