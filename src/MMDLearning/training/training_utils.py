@@ -1,4 +1,5 @@
 from typing import Iterator, Optional, Tuple, Any
+import torch
 
 def _iter_cycle_no_cache(loader: Iterator):
     """Cycle a DataLoader by recreating its iterator on exhaustion (DDP-safe, no caching)."""
@@ -53,11 +54,9 @@ def pair_by_source_len(
         yield idx, (b_prim, b_sec)
 
 def split_st(data, domains=('Source', 'Target')):
-    ns = data['n_s']
-    if ns is None:
-        return [data, None]
     if len(domains)==1:
         return [data, None] if domains[0]=='Source' else [None, data]
+    ns = data['n_s']
     split_data=[{} for _ in range(2)]
     for k, v in data.items():
         if k != 'n_s':

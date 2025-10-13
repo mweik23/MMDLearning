@@ -388,6 +388,7 @@ class GroupedParticleNet(nn.Module):
                  use_fts_bn=True,
                  use_counts=True,
                  for_inference=False,
+                 tap_keys=(),
                  groups='all',
                  **kwargs):
         super(GroupedParticleNet, self).__init__(**kwargs)
@@ -405,15 +406,16 @@ class GroupedParticleNet(nn.Module):
             for_inference = for_inference,
             num_classes = num_classes
         )
+        self.tap_keys = tap_keys
         
     def param_groups(self):
         return {name: list(stage.parameters()) for name, stage in self.stages.items()}
 
-    def forward(self, features, points=None, mask=None, tap_keys=(), **kwargs):
+    def forward(self, features, points=None, mask=None, **kwargs):
         output = []
         for i, (name, stage) in enumerate(self.stages.items()):
             features = stage(features, points = (points if i==0 else None), mask=mask, **kwargs)
-            if name in tap_keys:
+            if name in self.tap_keys:
                 output.append(features)
         return features, output
 
