@@ -49,7 +49,7 @@ def main(argv=None):
     dataset_args = create_dataset_args(PROJECT_ROOT,
                                        datadir=cfg.datadir,
                                        do_MMD=cfg.do_MMD,
-                                       mixed_batch=(cfg.do_MMD and 'backbone' not in cfg.target_encoder_groups) or cfg.mode == 'st_classifier',
+                                       mixed_batch=(cfg.do_MMD and 'backbone' not in cfg.target_model_groups) or cfg.mode == 'st_classifier',
                                        model=cfg.model_name,
                                        num_data=cfg.num_data,
                                        tv_fracs={'train': 0.6, 'valid': 0.2})
@@ -75,7 +75,7 @@ def main(argv=None):
     
     # get model with predictor wrapper  
     model = make_predictor(cfg.model_name,
-                           target_encoder_groups=cfg.target_encoder_groups,
+                           target_model_groups=cfg.target_model_groups,
                            input_dims=7, #TODO: get this from the dataset shape
                            num_classes=2,
                            tap_keys=('encoder',) if cfg.do_MMD else (),
@@ -85,7 +85,7 @@ def main(argv=None):
     model = maybe_convert_syncbn(model, dist_info.device_type, dist_info.world_size)
     model = model.to(device)
     
-    param_groups = get_param_groups(model, model_config, peak_lr=cfg.peak_lr, target_encoder_groups=cfg.target_encoder_groups)
+    param_groups = get_param_groups(model, model_config, peak_lr=cfg.peak_lr, target_model_groups=cfg.target_model_groups)
     param_groups, train_groups = freeze_param_groups(param_groups, frozen_groups={'main': ()}) # no frozen groups for now TODO: add input arg
     
     metrics = MetricHistory()
@@ -94,13 +94,13 @@ def main(argv=None):
 
     if dist_info.is_primary:
         model_total, model_trainable = print_stage_param_summary(model.model)
-        if len(cfg.target_encoder_groups)>0:
-            t_encoder_total, t_encoder_trainable = print_stage_param_summary(model.target_encoder, name='Target Model')
+        if len(cfg.target_model_groups)>0:
+            t_model_total, t_model_trainable = print_stage_param_summary(model.target_model, name='Target Model')
         total_params = sum(p.numel() for p in model.parameters())
         trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
         print(f"Total parameters: {total_params:,}, Trainable parameters: {trainable_params:,}")
-        assert total_params == model_total + (t_encoder_total if len(cfg.target_encoder_groups)>0 else 0), "Total params do not match sum of model and target encoder!"
-        assert trainable_params == model_trainable + (t_encoder_trainable if len(cfg.target_encoder_groups)>0 else 0), "Trainable params do not match sum of model and target encoder!"
+        assert total_params == model_total + (t_model_total if len(cfg.target_model_groups)>0 else 0), "Total params do not match sum of model and target encoder!"
+        assert trainable_params == model_trainable + (t_model_trainable if len(cfg.target_model_groups)>0 else 0), "Trainable params do not match sum of model and target encoder!"
     optimizer = optim.AdamW([g for group in train_groups.values() for g in group])
     ddp_model = wrap_like_ddp(model, device, dist_info.local_rank, use_ddp=(dist_info.world_size>1))
 
@@ -109,7 +109,7 @@ def main(argv=None):
                                ddp_model,
                                optimizer=optimizer if cfg.ld_optim_state else None,
                                device=device,
-                               twin_encoder=len(cfg.target_encoder_groups)>0)
+                               target_model=len(cfg.target_model_groups)>0)
     else:
         start_epoch = 0
         
