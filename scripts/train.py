@@ -13,7 +13,7 @@ from utils.cli import build_parser
 from utils.utils import MetricHistory
 from models.predictors import make_predictor
 from data.dataset_v2 import initialize_datasets, retrieve_dataloaders, create_dataset_args
-from utils.model_utils import print_stage_param_summary, get_param_groups
+from utils.model_utils import print_stage_param_summary, get_param_groups, freeze_param_groups
 from training.schedulers import SchedConfig
 from training.losses import MMDLoss, MMDScheduler
 from training.trainer import Trainer

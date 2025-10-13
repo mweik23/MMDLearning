@@ -11,7 +11,7 @@ from .reporting import display_epoch_summary, make_logits_plt, make_train_plt, d
 from .losses import LambdaAdjust
 from .schedulers import SchedConfig, make_scheduler
 from .policies import make_policy
-from .training_utils import pair_by_source_len
+from .training_utils import pair_by_source_len, Initialization, TrainEpochStart, ValidEpochStart, TestEpochStart, EndFirstVal
 #---------------------------------------------
 
 # put SRC on path
@@ -61,8 +61,7 @@ class Trainer:
             EndFirstVal: self._end_first_val,
         }
         self.update_state(Initialization(bce_estimate=0.27, mmd_estimate=0.01)) #guess values
-        self.main_domain = self.state['track_domains'][0]
-            policy_kwargs = {'mmd_sched': self.mmd_sched, 'MMD_frac': self.cfg.MMD_frac}
+        policy_kwargs = {'mmd_sched': self.mmd_sched, 'MMD_frac': self.cfg.MMD_frac}
         self.scheduler = make_scheduler(self.optimizer, self.sched_config)
         self.buffers = {d: EpochLogitBuffer(keep_indices=False, 
                                             keep_domains=False, 
@@ -220,14 +219,14 @@ class Trainer:
 
             self.metrics.append(
                 epochs = self.start_epoch-1,
-                val_BCE = val_metrics[self.main_domain]['BCE_loss'],
-                val_MMD = self.cfg.MMD_frac*val_metrics[self.main_domain]['BCE_loss'], # by construction
-                val_loss = (1+self.cfg.MMD_frac)*val_metrics[self.main_domain]['BCE_loss'], 
-                val_acc = val_metrics[self.main_domain]['acc'],
-                val_time = val_metrics[self.main_domain]['time'],
+                val_BCE = val_metrics[self.state['track_domains'][0]]['BCE_loss'],
+                val_MMD = self.cfg.MMD_frac*val_metrics[self.state['track_domains'][0]]['BCE_loss'], # by construction
+                val_loss = (1+self.cfg.MMD_frac)*val_metrics[self.state['track_domains'][0]]['BCE_loss'], 
+                val_acc = val_metrics[self.state['track_domains'][0]]['acc'],
+                val_time = val_metrics[self.state['track_domains'][0]]['time'],
             )
 
-            self.update_state(EndFirstVal(bce=val_metrics[self.main_domain]['BCE_loss'], mmd=val_metrics[self.main_domain]['MMD_loss']))
+            self.update_state(EndFirstVal(bce=val_metrics[self.state['track_domains'][0]]['BCE_loss'], mmd=val_metrics[self.state['track_domains'][0]]['MMD_loss']))
 
             self.metrics.update(best_val=self.metrics.get('val_loss')[-1],
                                 best_epoch=self.start_epoch-1
@@ -271,11 +270,11 @@ class Trainer:
 
             self.metrics.append(
                     epochs = epoch,
-                    train_BCE = train_metrics[self.main_domain]['BCE_loss'],
-                    train_MMD = train_metrics[self.main_domain]['MMD_loss'], # by construction
-                    train_loss = train_metrics[self.main_domain]['BCE_loss'] + train_metrics[self.main_domain]['MMD_loss'], 
-                    train_acc = train_metrics[self.main_domain]['acc'],
-                    train_time = train_metrics[self.main_domain]['time'],
+                    train_BCE = train_metrics[self.state['track_domains'][0]]['BCE_loss'],
+                    train_MMD = train_metrics[self.state['track_domains'][0]]['MMD_loss'], # by construction
+                    train_loss = train_metrics[self.state['track_domains'][0]]['BCE_loss'] + train_metrics[self.state['track_domains'][0]]['MMD_loss'], 
+                    train_acc = train_metrics[self.state['track_domains'][0]]['acc'],
+                    train_time = train_metrics[self.state['track_domains'][0]]['time'],
                     classifier_lr = [g['lr'] for g in self.optimizer.param_groups if g['name']=='classifier'][0]
                 )
             display_epoch_summary(partition="train", epoch=epoch, tot_epochs=self.final_epoch,
@@ -289,16 +288,16 @@ class Trainer:
                                                      primary_loader=self.dataloaders[0]['valid'], 
                                                      secondary_loader=self.dataloaders[1]['valid'] if self.cfg.twin_encoder and self.cfg.do_MMD else None)
                 if self.cfg.pretrained =='' and epoch==self.start_epoch:
-                    self.update_state(EndFirstVal(bce=val_metrics[self.main_domain]['BCE_loss'], mmd=val_metrics[self.main_domain]['MMD_loss']))
+                    self.update_state(EndFirstVal(bce=val_metrics[self.state['track_domains'][0]]['BCE_loss'], mmd=val_metrics[self.state['track_domains'][0]]['MMD_loss']))
                     if self.cfg.do_MMD:
-                        val_metrics[self.main_domain]['MMD_loss'] = self.cfg.MMD_frac*val_metrics[self.main_domain]['BCE_loss']
-                val_loss = val_metrics[self.main_domain]['BCE_loss'] + val_metrics[self.main_domain]['MMD_loss']
+                        val_metrics[self.state['track_domains'][0]]['MMD_loss'] = self.cfg.MMD_frac*val_metrics[self.state['track_domains'][0]]['BCE_loss']
+                val_loss = val_metrics[self.state['track_domains'][0]]['BCE_loss'] + val_metrics[self.state['track_domains'][0]]['MMD_loss']
                 self.metrics.append(
-                        val_BCE = val_metrics[self.main_domain]['BCE_loss'],
-                        val_MMD = val_metrics[self.main_domain]['MMD_loss'],
+                        val_BCE = val_metrics[self.state['track_domains'][0]]['BCE_loss'],
+                        val_MMD = val_metrics[self.state['track_domains'][0]]['MMD_loss'],
                         val_loss = val_loss,
-                        val_acc = val_metrics[self.main_domain]['acc'],
-                        val_time = val_metrics[self.main_domain]['time'],
+                        val_acc = val_metrics[self.state['track_domains'][0]]['acc'],
+                        val_time = val_metrics[self.state['track_domains'][0]]['time'],
                     )
                 
                 if val_loss < self.metrics.get('best_val'):

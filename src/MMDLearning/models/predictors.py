@@ -1,5 +1,6 @@
 # src/yourpkg/models/predictors.py
 import torch.nn as nn
+import torch
 import importlib
 from typing import Dict, Any, Tuple
 
@@ -8,6 +9,7 @@ import sys
 sys.path.append(str(SRC_DIR))
 
 from utils.model_utils import unwrap
+from training.training_utils import split_st, merge_st
 
 # ----------- Model Registry (update as needed) -----------
 MODEL_REGISTRY = {
@@ -32,13 +34,12 @@ class ParticleNetPredictor(BasePredictor):
     def __init__(self, 
                  model_name: str = 'ParticleNet', 
                  target_encoder_groups: Tuple[str]=(), 
-                 tap_keys: Tuple[str] = (),
                  encoder_layer: str = 'encoder',
                  **model_kwargs):
         super().__init__()
         self.model = self._load_model(model_name, **model_kwargs)
         self.groups = model_kwargs['groups']
-        self.tap_keys = tap_keys
+        self.tap_keys = model_kwargs.get('tap_keys', ())
         if len(target_encoder_groups)>0:
             target_kwargs = model_kwargs.copy()
             target_kwargs['groups'] = target_encoder_groups
@@ -109,20 +110,56 @@ class ParticleNetPredictor(BasePredictor):
     def forward(self, x, x_sec=None, domains=('Source', 'Target'), target_preds=False, **kw):
         taps={}
         if self.pipeline is None:
-            if x_sec is not None and x_sec is not None:
+            split_output = False
+            if x is not None and x_sec is not None:
+                split_output=True
                 x = merge_st(x, x_sec, ns=x['n_s'] or len(x['is_signal']))
+                x_sec = None
+                assert domains==('Source', 'Target'), "If both x and x_sec are provided, domains must be ('Source', 'Target')"
             elif x_sec is not None:
                 x = x_sec
                 x_sec = None
                 assert domains==('Target',), "If x is None and x_sec is not None, domains must be ('Target',)"
+            if domains==('Source', 'Target') and not target_preds:
+                split_output = True
             pred, tap_values = self.model(**x, tap_keys=self.tap_keys)
+            
             for k, v in zip(self.tap_keys, tap_values):
                 v_spl = split_st(v)
                 taps[k] = {d: v_spl[0] if d == 'Source' else v_spl[1] for d in domains}
+            if split_output:
+                pred = pred[:x['n_s']]
+                pred_sec = pred[x['n_s']:]
+            elif domains==('Source',):
+                pred_sec = None
+            elif domains==('Target',):
+                pred_sec = pred
+                pred = None
+            if not target_preds:
+                pred_sec = None
         else:
+            if x is not None and x_sec is not None:
+                split_output=True
             for runner in self.pipeline:
                 x, x_sec, taps = runner(x, x_sec=x_sec, owner=self, taps=taps, domains=domains, target_preds=target_preds)
-        return pred, taps
+            if domains==('Source',):
+                pred = x['features']
+                pred_sec = None
+            elif domains==('Target',):
+                pred_sec = x_sec['features']
+                pred = None
+            elif domains==('Source', 'Target'):
+                if x_sec is not None and not split_output:
+                    pred = merge_st(x, x_sec, ns=x['n_s'] or len(x['is_signal']))['features']
+                    pred_sec = None
+                elif x_sec is None and split_output:
+                    (x, x_sec) = split_st(x, domains=domains)
+                    pred = x['features']
+                    pred_sec = x_sec['features']
+                else:
+                    pred = x['features'] if x is not None else None
+                    pred_sec = x_sec['features'] if x_sec is not None else None
+        return (pred, pred_sec), taps
 
 class LorentzNetPredictor(BasePredictor):
     def __init__(self, model_name: str = 'LorentzNet', **model_kwargs):
@@ -187,6 +224,9 @@ class JointRunner(torch.nn.Module):
                     taps = {}
                 x = split_st(x_prim, domains=domains)
                 taps[name] = {d:x[0]['features'] if d=='Source' else x[1]['features'] for d in domains}
+        if domains==('Target',):
+            x_sec = x_prim
+            x_prim = None
         return x_prim, x_sec, taps
 
 class SplitRunner(torch.nn.Module):

@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from typing import Dict
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Tuple
 
 import sys
 from pathlib import Path
@@ -11,7 +11,7 @@ from .metrics import get_batch_metrics
 
 SRC_PATH = Path(__file__).parents[1].resolve() 
 sys.path.append(str(SRC_PATH))
-from utils.utils import split_batch
+from utils.utils import split_output
 from utils.buffers import EpochLogitBuffer
 
 class TrainingPolicy:
@@ -26,14 +26,14 @@ class SupervisedPolicy(TrainingPolicy):
 
     def compute_batch_metrics(self, *, data, model, state=None):
         #prepare the batch
-        prepared = model.module.prepare_batch(next(d for d in data if d is not None), self.device, self.dtype) #gets the non-None element of data
+        prepared = [model.module.prepare_batch(d, self.device, self.dtype) for d in data if d is not None]
 
-        pred, = model(prepared)
+        preds, _ = model(*prepared, domains=state['track_domains'], target_preds=state['phase']=='test')
 
         #get labels and masks
-        label = prepared['is_signal'].to(self.device, self.dtype).long()
+        labels = [p['is_signal'].to(self.device, self.dtype).long() for p in prepared]
 
-        batch_output = {d: {'pred': pred, 'label': label} for d in state['track_domains']}
+        batch_output = {d: {'pred': pred, 'label': label} for d, pred, label in zip(state['track_domains'], preds, labels)}
 
         for d in state['get_buffers']:
             self.bufs[d].add(
@@ -44,7 +44,7 @@ class SupervisedPolicy(TrainingPolicy):
         #calculate losses and metrics
         batch_metrics = get_batch_metrics(batch_output, self.loss_fns, domains=state['track_domains'])
 
-        tot_loss = batch_metrics['Source']['BCE_loss'] if 'Source' in batch_metrics else None
+        tot_loss = batch_metrics[state['track_domains'][0]]['BCE_loss']
 
         return batch_metrics, tot_loss
     
@@ -59,15 +59,32 @@ class MMDPolicy(TrainingPolicy):
 
     def compute_batch_metrics(self, *, data, model, state=None):
         #prepare the batch
-        prepared = model.module.prepare_batch(data[0], self.device, self.dtype)
-
-        pred, encoded = model(prepared, intermediates=('encoder',))
+        prepared = [model.module.prepare_batch(d, self.device, self.dtype) for d in data if d is not None]
+        target_preds = 'Target' in state['track_domains'] or 'Target' in state['get_buffers']
+        preds, taps = model(*prepared, domains=('Source', 'Target'), target_preds=target_preds)
 
         #get labels and masks
-        label = prepared['is_signal'].to(self.device, self.dtype).long()
-
-        #slice batch tensors by domain
-        batch_output = split_batch({'pred': pred, 'label': label, 'encoded': encoded}, n_s=prepared['n_s'])
+        labels = [p['is_signal'].to(self.device, self.dtype).long() for p in prepared]
+        if target_preds:
+            if len(prepared)==1:
+                assert preds[0] is not None, "If one batch is provided, preds[0] must not be None"
+                #slice batch tensors by domain
+                batch_output = split_output({'pred': preds[0], 'label': labels[0]}, n_s=prepared[0]['n_s'])
+            else:
+                assert preds[0] is not None and preds[1] is not None, "If two batches are provided, neither preds[0] nor preds[1] can be None"
+                batch_output = {d: {'pred': pred, 'label': label} for d, pred, label in zip(('Source', 'Target'), preds, labels)}
+        
+        else:
+            assert preds[0] is not None, "In training phase, preds[0] must not be None"
+            if len(prepared)==1:
+                batch_output = split_output({'label': labels[0]}, n_s=prepared[0]['n_s'])
+                batch_output['Source']['pred'] = preds[0]
+            else:
+                batch_output = {'Source': {'label': labels[0]}}
+                batch_output['Source']['pred'] = preds[0]
+                   
+        for k, v in taps['encoder'].items():
+            batch_output[k]['encoder'] = v
 
         for d in state['get_buffers']:
             self.bufs[d].add(
@@ -139,17 +156,19 @@ class SourceTargetClassifier(TrainingPolicy):
     def compute_batch_metrics(self, *, data, model, state=None):
         #prepare the batch
         prepared = model.module.prepare_batch(data[0], self.device, self.dtype)
-        pred, _, _ = model(prepared, domains=('Source', 'Target'), target_preds=True)
+        (pred, _), _ = model(prepared, domains=('Source', 'Target'), target_preds=True)
 
         #TODO: continue from here
         #get labels and masks
         label = prepared['is_target'].to(self.device, self.dtype).long()
-        batch_output = {d: {'pred': pred, 'label': label} for d in ['mixed']}
-
+        batch_output = {d: {'pred': pred, 'label': label} for d in state['track_domains']}
+        
+        if len(state['get_buffers']) > 0:
+            for_bufs = split_output(batch_output, n_s=prepared['n_s'])
         for d in state['get_buffers']:
             self.bufs[d].add(
-                logit_diffs=batch_output[d]['pred'][:, 1] - batch_output[d]['pred'][:, 0],
-                labels=batch_output[d]['label']
+                logit_diffs=for_bufs[d]['pred'][:, 1] - for_bufs[d]['pred'][:, 0],
+                labels=for_bufs[d]['label']
             )
 
         #calculate losses and metrics
@@ -164,14 +183,10 @@ def make_policy(do_MMD=False,
                 **kwargs) -> TrainingPolicy:
     if mode=='st_classifier':
         return SourceTargetClassifier(**kwargs)
+    elif mode=='qt_classifier':
+        if do_MMD:
+            return MMDPolicy(**kwargs)
+        else:
+            return SupervisedPolicy(**kwargs)
     else:
-        
-    if policy_type == 'mmd':
-        return MMDPolicy(**kwargs)
-        return TwinMMDPolicy(**kwargs)
-    elif policy_type == 'supervised':
-        return SupervisedPolicy(**kwargs)
-    elif policy_type == 'stc':
-        
-    else:
-        raise ValueError(f"Unknown policy type: {policy_type}")
+        raise ValueError(f"Unknown mode: {mode}")
