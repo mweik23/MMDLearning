@@ -73,7 +73,7 @@ class Trainer:
                                   dtype=self.dtype,
                                   do_MMD=self.cfg.do_MMD,
                                   mode=self.mode,
-                                  target_encoder_groups=self.cfg.target_encoder_groups,
+                                  target_model_groups=self.cfg.target_model_groups,
                                   **policy_kwargs)
         self.loader_names = ['primary_loader', 'secondary_loader']
 
@@ -248,7 +248,7 @@ class Trainer:
             self.update_state(TrainEpochStart())
             is_best=False
             # lambda adjust setting
-            #TODO: either update this for target_encoder or remove it
+            #TODO: either update this for target_model or remove it
             if self.cfg.mmd_interval != -1 and self.cfg.do_MMD:
                 if (epoch-self.start_epoch) % self.cfg.mmd_interval == 0:
                     with torch.no_grad():

@@ -31,7 +31,7 @@ def make_clean_dir(path):
         shutil.rmtree(path)   # remove the directory and all its contents
     os.makedirs(path) 
 
-def load_ckp(checkpoint_fpath, model, optimizer=None, device=torch.device('cpu'), twin_encoder=False):
+def load_ckp(checkpoint_fpath, model, optimizer=None, device=torch.device('cpu'), target_model=False):
     checkpoint = torch.load(checkpoint_fpath, map_location=device, weights_only=True)
     print('initial load of model state dict...')
     incompat = model.load_state_dict(checkpoint['state_dict'], strict=False)
@@ -39,7 +39,7 @@ def load_ckp(checkpoint_fpath, model, optimizer=None, device=torch.device('cpu')
     print("all keys present in loaded state except for target_encoder keys")     # expected: keys for target_* (new modules)
     assert len(incompat.unexpected_keys)==0, 'some unexpected keys in loaded state: ' + str(incompat.unexpected_keys)
     print("no unexpected keys in loaded state")  # expected: no unexpected
-    if twin_encoder:
+    if target_model:
         print('target_encoder detected, loading state dict for target_encoder from model state dict...')
         incompat = model.module.target_encoder.load_state_dict(
             model.module.model.state_dict(), strict=False

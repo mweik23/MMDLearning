@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch
 import importlib
 from typing import Dict, Any, Tuple
+from pathlib import Path
 
 SRC_DIR = (Path(__file__).parents[1]).resolve()
 import sys
@@ -33,17 +34,17 @@ class BasePredictor(nn.Module):
 class ParticleNetPredictor(BasePredictor):
     def __init__(self, 
                  model_name: str = 'ParticleNet', 
-                 target_encoder_groups: Tuple[str]=(), 
+                 target_model_groups: Tuple[str]=(), 
                  encoder_layer: str = 'encoder',
                  **model_kwargs):
         super().__init__()
         self.model = self._load_model(model_name, **model_kwargs)
         self.groups = model_kwargs['groups']
         self.tap_keys = model_kwargs.get('tap_keys', ())
-        if len(target_encoder_groups)>0:
+        if len(target_model_groups)>0:
             target_kwargs = model_kwargs.copy()
-            target_kwargs['groups'] = target_encoder_groups
-            self.joint = [group not in target_encoder_groups for group in self.groups]
+            target_kwargs['groups'] = target_model_groups
+            self.joint = [group not in target_model_groups for group in self.groups]
             if self.joint[0]:
                 target_kwargs['input_dims'], target_kwargs['seen_fc'] = self.model.stages[
                     self.groups[self.joint.index(False)-1]
@@ -80,9 +81,9 @@ class ParticleNetPredictor(BasePredictor):
         return self.model.stages
     
     @property
-    def stages_encoder(self):
-        if self.target_encoder is not None:
-            return self.target_encoder.stages
+    def stages_target(self):
+        if self.target_model is not None:
+            return self.target_model.stages
         return None
     
     @staticmethod  
@@ -97,11 +98,11 @@ class ParticleNetPredictor(BasePredictor):
         }
     
     def encode_target(self, p, **kw):
-        if self.target_encoder is None:
+        if self.target_model is None:
             raise ValueError("Target encoder not defined.")
         for use_sec, group in zip(self.use_secondary, self.groups):
             if use_sec:
-                p['features'] = self.target_encoder.stages[group](**p)
+                p['features'] = self.target_model.stages[group](**p)
             else:
                 p['features'] = self.model.stages[group](**p)
             if group == 'encoder':

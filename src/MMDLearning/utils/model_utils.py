@@ -24,7 +24,7 @@ def print_stage_param_summary(model, name='Source Model'):
 
     return model_total, model_trainable
 
-def get_param_groups(model, model_config, peak_lr=1e-3, target_encoder_groups=()):
+def get_param_groups(model, model_config, peak_lr=1e-3, target_model_groups=()):
     param_groups = {}
     param_groups['main'] = [{
             "params": list(model.stages[name].parameters()),
@@ -34,14 +34,14 @@ def get_param_groups(model, model_config, peak_lr=1e-3, target_encoder_groups=()
         }
         for name, specs in model_config['group_specs'].items()
     ]
-    if len(target_encoder_groups) > 0:
-        param_groups['target_encoder'] = [{
-                "params": list(model.target_encoder.stages[name].parameters()),
+    if len(target_model_groups) > 0:
+        param_groups['target_model'] = [{
+                "params": list(model.target_model.stages[name].parameters()),
                 "lr": model_config['group_specs'][name]['optim_params'].get('lr', model_config['defaults']['lr'])*peak_lr,
                 "weight_decay": model_config['group_specs'][name]['optim_params'].get('weight_decay', model_config['defaults']['weight_decay']),
                 "name": name
             }
-            for name in target_encoder_groups
+            for name in target_model_groups
         ]
     return param_groups
 

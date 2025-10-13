@@ -151,7 +151,6 @@ class SourceTargetClassifier(TrainingPolicy):
     bufs: Dict[str, EpochLogitBuffer]
     device: torch.device
     dtype: torch.dtype
-    target_encoder_groups: Tuple[str] = ()
 
     def compute_batch_metrics(self, *, data, model, state=None):
         #prepare the batch
