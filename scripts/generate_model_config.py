@@ -4,11 +4,9 @@ import argparse
 from pathlib import Path
 PROJECT_ROOT = Path(__file__).parents[1].resolve()
 SRC_ROOT = PROJECT_ROOT / 'src' / 'MMDLearning'
-print('src root: ', str(SRC_ROOT))
 import sys
 sys.path.append(str(SRC_ROOT))
 from utils.io import check_path
-
 def str2bool(v):
     if isinstance(v, bool):
         return v
@@ -34,7 +32,6 @@ if __name__=='__main__':
     parser.add_argument("--freeze_bn", type=str2bool, nargs="+", default=[False], help="List of booleans (e.g., --freeze_bn true false true)")
     args = parser.parse_args()
     
-    
     if args.conv_params is None:
         args.conv_params = [[]*len(args.group_names)]
     if args.fc_params is None:
@@ -45,7 +42,7 @@ if __name__=='__main__':
         args.lr = [args.lr]*len(args.group_names)
     if len(args.freeze_bn)==1:
         args.freeze_bn = args.freeze_bn*len(args.group_names)
-        
+
     arch_config = {
         "group_order": args.group_names,
         "group_specs": {
@@ -74,6 +71,7 @@ if __name__=='__main__':
     suffix = '.json'
     name = check_path(args.name, root=root, suffix=suffix, overwrite=args.overwrite)
     config_path = f'{root}_{name}{suffix}'
+    print(f'Writing model config to {config_path}')
     with open(config_path, "w") as f:
         json.dump(arch_config, f, indent=4)
 

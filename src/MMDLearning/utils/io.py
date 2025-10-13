@@ -30,10 +30,24 @@ def make_clean_dir(path):
     if os.path.exists(path):
         shutil.rmtree(path)   # remove the directory and all its contents
     os.makedirs(path) 
-    
-def load_ckp(checkpoint_fpath, model, optimizer=None, device=torch.device('cpu')):
-    checkpoint = torch.load(checkpoint_fpath, map_location=device)
-    model.load_state_dict(checkpoint['state_dict'])
+
+def load_ckp(checkpoint_fpath, model, optimizer=None, device=torch.device('cpu'), twin_encoder=False):
+    checkpoint = torch.load(checkpoint_fpath, map_location=device, weights_only=True)
+    print('initial load of model state dict...')
+    incompat = model.load_state_dict(checkpoint['state_dict'], strict=False)
+    assert all('target_encoder' in k.split('.') for k in incompat.missing_keys), 'some non-target_encoder keys are missing: ' + str(incompat.missing_keys)
+    print("all keys present in loaded state except for target_encoder keys")     # expected: keys for target_* (new modules)
+    assert len(incompat.unexpected_keys)==0, 'some unexpected keys in loaded state: ' + str(incompat.unexpected_keys)
+    print("no unexpected keys in loaded state")  # expected: no unexpected
+    if twin_encoder:
+        print('target_encoder detected, loading state dict for target_encoder from model state dict...')
+        incompat = model.module.target_encoder.load_state_dict(
+            model.module.model.state_dict(), strict=False
+        )
+        assert len(incompat.missing_keys)==0, 'some keys are missing in loaded state: ' + str(incompat.missing_keys)
+        print("no missing keys in loaded state for target_encoder")  # expected: no missing
+        assert all('classifier' in k.split('.') for k in incompat.unexpected_keys), 'some non-classifier keys are unexpected: ' + str(incompat.unexpected_keys)
+        print("the only unexpected keys are for the classifier as expected.") #classifier weights will be unexpected
     if optimizer is not None:
         optimizer.load_state_dict(checkpoint['optimizer'])
     return checkpoint['epoch']
@@ -68,6 +82,7 @@ def config_init(args, dist_info, project_root, pt_overwrite_keys=['datadir', 'mo
         args.exp_name = ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
     pt_args_overwrite = {}
     args.logdir = str(project_root / args.logdir)
+    args.target_encoder_groups = tuple(args.target_encoder_groups or [])
     if args.pretrained != '':
         if '/' in args.pretrained:
             pt_exp = args.pretrained.split('/')[0]

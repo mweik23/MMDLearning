@@ -301,7 +301,6 @@ class StageBlock(nn.Module):
         if self.init_block and self.use_fts_bn:
             self.bn_fts = nn.BatchNorm1d(input_dims)
         self.edge_convs = nn.ModuleList()
-        print('conv_params: ', conv_params)
         for idx, layer_param in enumerate(conv_params):
             k, channels = layer_param
             in_feat = input_dims if idx == 0 else conv_params[idx - 1][1][-1]
@@ -339,48 +338,46 @@ class StageBlock(nn.Module):
             is_fc = False
             return self.conv_params[-1][1][-1], is_fc
         return self.input_dims, False
-        
-    def forward(self, x, points=None, mask=None):
+
+    def forward(self, features, points=None, mask=None, **kwargs):
         if len(self.conv_params)>0:
             if mask is None:
-                mask = (x.abs().sum(dim=1, keepdim=True) != 0)  # (N, 1, P)
-            x = x * mask
-            
+                mask = (features.abs().sum(dim=1, keepdim=True) != 0)  # (N, 1, P)
+            features = features * mask
             if self.init_block:
                 points = points * mask
             else:
-                points = x
+                points = features
             coord_shift = (mask == 0) * 1e9
             if self.use_counts:
                 counts = mask.float().sum(dim=-1)
                 counts = torch.max(counts, torch.ones_like(counts))  # >=1
 
             if self.use_fts_bn and self.init_block:
-                x = self.bn_fts(x) * mask
+                features = self.bn_fts(features) * mask
                 
             for idx, conv in enumerate(self.edge_convs):
-                pts = (points if idx == 0 and self.init_block else x) + coord_shift
-                x = conv(pts, x) * mask
-   
+                pts = (points if idx == 0 and self.init_block else features) + coord_shift
+                features = conv(pts, features) * mask
         #TODO: make this more specific to this use case
         if self.aggregate:
             if len(self.conv_params)==0:
                 if mask is None:
-                    mask = (x.abs().sum(dim=1, keepdim=True) != 0) # (N, 1, P)
+                    mask = (features.abs().sum(dim=1, keepdim=True) != 0) # (N, 1, P)
                 if self.use_counts:
                     counts = mask.float().sum(dim=-1)
                     counts = torch.max(counts, torch.ones_like(counts))  # >=1
 
             if self.use_counts:
-                x = x.sum(dim=-1) / counts  # divide by the real counts
+                features = features.sum(dim=-1) / counts  # divide by the real counts
             else:
-                x = x.mean(dim=-1)
-                
+                features = features.mean(dim=-1)
+
         if len(self.fc_params)>0 and self.mlp is not None:
-            x = self.mlp(x)
+            features = self.mlp(features)
             if self.for_inference and self.final_block:
-                x = torch.softmax(x, dim=1)
-        return x
+                features = torch.softmax(features, dim=1)
+        return features
 
 class GroupedParticleNet(nn.Module):
 
@@ -391,50 +388,59 @@ class GroupedParticleNet(nn.Module):
                  use_fts_bn=True,
                  use_counts=True,
                  for_inference=False,
+                 groups='all',
                  **kwargs):
         super(GroupedParticleNet, self).__init__(**kwargs)
 
         self.use_fts_bn = use_fts_bn
 
         self.use_counts = use_counts
-        num_stages = len(cfg['group_order'])
-            
-        self.stages = nn.ModuleDict()
-        cur_dim = input_dims
-        seen_fc = False
-        for i, name in enumerate(cfg['group_order']):
-            conv_params = cfg['group_specs'][name]['conv_params']
-            fc_params = cfg['group_specs'][name]['fc_params']
-            freeze_bn = cfg['group_specs'][name]['freeze_bn']
-            self.stages[name] = StageBlock(
-                cur_dim,
-                conv_params = conv_params,
-                fc_params = fc_params,
-                final_block = (i+1==num_stages),
-                num_classes = num_classes,
-                aggregate = (not seen_fc) and len(fc_params)>0,
-                init_block = (i==0),
-                use_fts_bn = self.use_fts_bn,
-                for_inference = for_inference,
-                freeze_bn = freeze_bn
-            )
-            cur_dim, is_fc = self.stages[name]._infer_output_info()
-            if is_fc:
-                seen_fc = True
+        #TODO: check this
+        self.stages = build_stages(
+            input_dims = input_dims,
+            groups = cfg['group_order'] if groups=='all' else groups,
+            group_specs = cfg['group_specs'],
+            use_fts_bn = use_fts_bn,
+            use_counts = use_counts,
+            for_inference = for_inference,
+            num_classes = num_classes
+        )
         
     def param_groups(self):
         return {name: list(stage.parameters()) for name, stage in self.stages.items()}
-    
-    def forward(self, points, features, mask=None, intermediates=[]):
-        x = features
+
+    def forward(self, features, points=None, mask=None, tap_keys=(), **kwargs):
         output = []
         for i, (name, stage) in enumerate(self.stages.items()):
-            x = stage(x, points = (points if i==0 else None), mask=mask)
-            if name in intermediates:
-                output.append(x)
-        return x, output
-    
-    
+            features = stage(features, points = (points if i==0 else None), mask=mask, **kwargs)
+            if name in tap_keys:
+                output.append(features)
+        return features, output
+
+def build_stages(*, input_dims, groups, group_specs, use_fts_bn, use_counts, for_inference, num_classes, seen_fc=False):
+    stages = nn.ModuleDict()
+    cur_dim = input_dims
+    for i, name in enumerate(groups):
+        conv_params = group_specs[name]['conv_params']
+        fc_params = group_specs[name]['fc_params']
+        freeze_bn = group_specs[name]['freeze_bn']
+        stages[name] = StageBlock(
+            cur_dim,
+            conv_params = conv_params,
+            fc_params = fc_params,
+            final_block = name=='classifier',
+            num_classes = num_classes,
+            aggregate = (not seen_fc) and len(fc_params)>0,
+            init_block = name=='backbone',
+            use_fts_bn = use_fts_bn,
+            for_inference = for_inference,
+            freeze_bn = freeze_bn
+        )
+        cur_dim, is_fc = stages[name]._infer_output_info()
+        if is_fc:
+            seen_fc = True
+    return stages
+                
 class ParticleNet(nn.Module):
 
     def __init__(self,

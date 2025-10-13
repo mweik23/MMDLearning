@@ -10,12 +10,15 @@ sys.path.append(str(SRC_path))
 from utils.distributed import setup_dist, DistInfo, wrap_like_ddp, maybe_convert_syncbn
 from utils.io import config_init, load_ckp
 from utils.cli import build_parser
+from utils.utils import MetricHistory
 from models.predictors import make_predictor
 from data.dataset_v2 import initialize_datasets, retrieve_dataloaders, create_dataset_args
-from utils.model_utils import print_stage_param_summary
+from utils.model_utils import print_stage_param_summary, get_param_groups
 from training.schedulers import SchedConfig
 from training.losses import MMDLoss, MMDScheduler
 from training.trainer import Trainer
+import torch.distributed as dist
+
 PROJECT_ROOT = Path(__file__).parents[1].resolve()
 
 '''
@@ -29,7 +32,6 @@ def main(argv=None):
     #get arguments
     parser = build_parser()
     args = parser.parse_args(argv)
-    
     #set up distributed training
     dist_info: DistInfo = setup_dist(arg_num_workers=args.num_workers)
     if dist_info.is_primary:
@@ -44,45 +46,70 @@ def main(argv=None):
     np.random.seed(cfg.seed)#+ rank)
     
     #load data sets
-    dataset_args = create_dataset_args(cfg, PROJECT_ROOT)
+    dataset_args = create_dataset_args(PROJECT_ROOT,
+                                       datadir=cfg.datadir,
+                                       do_MMD=cfg.do_MMD,
+                                       mixed_batch=(cfg.do_MMD and 'backbone' not in cfg.target_encoder_groups) or cfg.mode == 'st_classifier',
+                                       model=cfg.model_name,
+                                       num_data=cfg.num_data,
+                                       tv_fracs={'train': 0.6, 'valid': 0.2})
+    
     datasets = [initialize_datasets(**d_args) for d_args in dataset_args]
-    train_sampler, dataloaders = retrieve_dataloaders(cfg.do_MMD, datasets, cfg.batch_size,
-                                                      num_workers=dist_info.num_workers,
-                                                      rank=dist_info.rank,
-                                                      num_replicas=dist_info.world_size,
-                                                      model_arch=cfg.model_name)
+    dataloaders = [
+        retrieve_dataloaders(
+            dsets,
+            2*cfg.batch_size if len(datasets)==1 else cfg.batch_size,
+            num_workers=dist_info.num_workers,
+            rank=dist_info.rank,
+            num_replicas=dist_info.world_size,
+            model_arch=cfg.model_name,
+            collate='sorted' if len(datasets)==1 else None
+        ) 
+        for dsets in datasets
+    ]
     
     #load model config
     if cfg.model_config != '':
         with open(PROJECT_ROOT / 'model_configs' / cfg.model_config, 'r') as f:
             model_config = json.load(f)
     
-    # get model with predictor wrapper    
+    # get model with predictor wrapper  
     model = make_predictor(cfg.model_name,
-                            input_dims=7, #TODO: get this from the dataset shape
-                            num_classes=2,
-                            cfg=model_config)
+                           target_encoder_groups=cfg.target_encoder_groups,
+                           input_dims=7, #TODO: get this from the dataset shape
+                           num_classes=2,
+                           tap_keys=('encoder',) if cfg.do_MMD else (),
+                           encoder_layer='encoder',
+                           cfg=model_config)
     
     model = maybe_convert_syncbn(model, dist_info.device_type, dist_info.world_size)
     model = model.to(device)
-    stage_param_groups = [{
-            "params": list(model.stages[name].parameters()), 
-            "lr": specs['optim_params'].get('lr', model_config['defaults']['lr'])*cfg.peak_lr,
-            "weight_decay": specs['optim_params'].get('weight_decay', model_config['defaults']['weight_decay']), 
-            "name": name
-        }
-        for name, specs in model_config['group_specs'].items()
-    ]
+    
+    param_groups = get_param_groups(model, model_config, peak_lr=cfg.peak_lr, target_encoder_groups=cfg.target_encoder_groups)
+    param_groups, train_groups = freeze_param_groups(param_groups, frozen_groups={'main': ()}) # no frozen groups for now TODO: add input arg
+    
+    metrics = MetricHistory()
+    metrics.update(peak_lr_by_group={k: [g['lr'] for g in groups] for k, groups in param_groups.items()})
+    #TODO: update usage of param_groups ahead
+
     if dist_info.is_primary:
-        print_stage_param_summary(model)
-    optimizer = optim.AdamW(stage_param_groups)
+        model_total, model_trainable = print_stage_param_summary(model.model)
+        if len(cfg.target_encoder_groups)>0:
+            t_encoder_total, t_encoder_trainable = print_stage_param_summary(model.target_encoder, name='Target Model')
+        total_params = sum(p.numel() for p in model.parameters())
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        print(f"Total parameters: {total_params:,}, Trainable parameters: {trainable_params:,}")
+        assert total_params == model_total + (t_encoder_total if len(cfg.target_encoder_groups)>0 else 0), "Total params do not match sum of model and target encoder!"
+        assert trainable_params == model_trainable + (t_encoder_trainable if len(cfg.target_encoder_groups)>0 else 0), "Trainable params do not match sum of model and target encoder!"
+    optimizer = optim.AdamW([g for group in train_groups.values() for g in group])
     ddp_model = wrap_like_ddp(model, device, dist_info.local_rank, use_ddp=(dist_info.world_size>1))
 
     if cfg.pretrained != '':
         start_epoch = load_ckp(f"{cfg.logdir}/{cfg.pretrained}/best-val-model.pt",
                                ddp_model,
                                optimizer=optimizer if cfg.ld_optim_state else None,
-                               device=device)
+                               device=device,
+                               twin_encoder=len(cfg.target_encoder_groups)>0)
     else:
         start_epoch = 0
         
@@ -96,6 +123,7 @@ def main(argv=None):
         mode = "min",
         factor = cfg.reduce_factor,
         patience = cfg.patience,
+        threshold = cfg.threshold
     )
     
     mmd_sched = MMDScheduler(cfg.MMDturnon_epoch, cfg.MMDturnon_width) if cfg.do_MMD else None
@@ -103,7 +131,7 @@ def main(argv=None):
     loss_fns = {'bce': nn.CrossEntropyLoss()}
     if cfg.do_MMD:
         loss_fns['mmd'] = MMDLoss()
-
+    
     trainer = Trainer(
         cfg=cfg,
         ddp_model=ddp_model,
@@ -114,8 +142,9 @@ def main(argv=None):
         sched_config=sched_config,
         loss_fns=loss_fns,
         mmd_sched=mmd_sched,
-        train_sampler=train_sampler,
-        dataloaders=dataloaders
+        dataloaders=dataloaders,
+        metrics=metrics,
+        mode=cfg.mode
     )
     
     #for n,m in ddp_model.named_modules():
@@ -124,7 +153,12 @@ def main(argv=None):
         trainer.train()
 
     trainer.test()
+    
+    if dist_info.initialized:
+        dist.destroy_process_group()
+        
     torch.cuda.empty_cache()
+    
     
 if __name__ == "__main__":
     main()

@@ -17,17 +17,23 @@ def display_epoch_summary(*,
                           domain: str = 'Source',
                           best_epoch: int = None,
                           best_val: float = None,
+                          auc: float = None,
+                          r30: float = None,
                           logger=None):
     if not is_master(): 
         return
     msg = (124 * "-" + "\n" +
            f"Domain: {domain} [{partition}] Epoch {epoch}/{tot_epochs} — "
            f"BCE {bce:.4f}, MMD {mmd:.4f}, Acc {acc:.4f}, Time {time_s:.1f}s")
+    if auc is not None:
+        msg += f", AUC {auc:.4f}"
+    if r30 is not None:
+        msg += f", R30 {r30:.4f}"
     (logger.info if logger else print)(msg)
     msg=''
     if partition == 'validation' and best_epoch is not None and best_val is not None:
-        msg += f"  (best val epoch {best_epoch} with loss {best_val:.4f})"
-    msg += "\n" + 124 * "-"
+        msg += f"  (best val epoch {best_epoch} with loss {best_val:.4f})\n"
+    msg += 124 * "-"
     (logger.info if logger else print)(msg)
     return msg
 
@@ -95,8 +101,9 @@ def make_train_plt(train_metrics, path, pretrained=False, do_MMD=False, rename_m
 def make_logits_plt(logit_diffs, path, name='final'):
     plt.figure()
     for d, l in logit_diffs.items():
-        plt.hist(l, bins=100, histtype='step', label=d, density=True)
-
+        plt.hist(l, bins=200, histtype='step', label=d, density=True)
+    plt.xlabel('logit difference')
+    plt.xlim([-10, 10])
     plt.legend(frameon=False)
     plt.savefig(f"{path}/logit_diff_{name}.pdf")
     plt.close()
