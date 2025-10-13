@@ -34,6 +34,8 @@ def build_parser():
                         help='number of workers for the dataloader')
     parser.add_argument('--patience', type=int, default=10, metavar='N',
                         help='learning rate scheduler')
+    parser.add_argument('--threshold', type=float, default=1e-4, metavar='N',
+                        help='threshold for lr scheduler to measure new optimum')
     parser.add_argument('--reduce_factor', type=float, default=0.1, metavar='N',
                         help='factor for LR scheduler if reduce')
     parser.add_argument('--start_lr', type=float, default=1e-4, metavar='N',
@@ -54,6 +56,10 @@ def build_parser():
                         help = 'Use target labels for MMD')
     parser.add_argument('--model_name', type=str, default='LorentzNet', metavar='N',
                         help='model name')
+    parser.add_argument('--target_encoder_groups', nargs='+', default=None, metavar='N',
+                        help='use a twin encoder for target data (ParticleNet only)')
+    parser.add_argument('--mode', type=str, default='qt_classifier', metavar='N',
+                        help='mode of operation')
     ############################################################                    
     parser.add_argument('--local_rank', type=int, default=0)
     

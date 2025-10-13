@@ -62,6 +62,7 @@ class SchedConfig:
     mode: Literal["min","max"] = "min"  # for Plateau
     factor: float = 0.5
     patience: int = 5
+    threshold: float = 1e-4  # for Plateau
 
 def make_scheduler(optimizer, cfg: SchedConfig, *, total_steps: Optional[int]=None, steps_per_epoch: int=1):
     if cfg.kind == "cosine_warmup":
@@ -99,14 +100,14 @@ def make_scheduler(optimizer, cfg: SchedConfig, *, total_steps: Optional[int]=No
             optimizer,
             warmup_epochs=cfg.warmup_epochs,
             start_factor=cfg.lr_min,
-            plateau_kwargs=dict(mode=cfg.mode, factor=cfg.factor, patience=cfg.patience)
+            plateau_kwargs=dict(mode=cfg.mode, factor=cfg.factor, patience=cfg.patience, threshold=cfg.threshold)
         )
         else:
             return WarmupThenPlateau(
                 optimizer,
                 warmup_steps=cfg.warmup_epochs * steps_per_epoch,
                 start_factor=cfg.lr_min,
-                plateau_kwargs=dict(mode=cfg.mode, factor=cfg.factor, patience=cfg.patience)
+                plateau_kwargs=dict(mode=cfg.mode, factor=cfg.factor, patience=cfg.patience, threshold=cfg.threshold)
             )
     raise ValueError(f"Unknown scheduler kind: {cfg.kind}")
 

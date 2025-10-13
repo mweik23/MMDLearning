@@ -8,19 +8,7 @@ import h5py, glob
 from .jetdatasets import JetDataset
 from copy import deepcopy
 
-def retrieve_dataloaders(do_MMD, datasets, batch_size, **kwargs):
-    dataloaders = []
-    # set up dataloaders
-    for dsets in datasets:
-        ts, dl = retrieve_individual_dataloaders(dsets,
-                                      2*batch_size if do_MMD else batch_size, 
-                                      **kwargs)
-        if ts is not None:
-            train_sampler = ts
-        dataloaders.append(dl)
-    return train_sampler, dataloaders
-
-def retrieve_individual_dataloaders(datasets, batch_size, num_workers = 4, rank=None, num_replicas=None, model_arch='LorentzNet'):
+def retrieve_dataloaders(datasets, batch_size, num_workers = 4, rank=None, num_replicas=None, model_arch='LorentzNet', collate=None):
 
     # distributed training
     if 'train' in datasets:
@@ -31,7 +19,8 @@ def retrieve_individual_dataloaders(datasets, batch_size, num_workers = 4, rank=
     if model_arch=='LorentzNet':
         collate = lambda data: collate_fn(data, scale=1, add_beams=True, beam_mass=1) #TODO: update to give a sorted batch
     elif model_arch=='ParticleNet' or model_arch=='ParticleNet-Lite':
-        collate=collate_sorted
+        if collate == 'sorted':
+            collate=collate_sorted
     dataloaders = {split: DataLoader(dataset,
                                      batch_size=batch_size if (split == 'train') else batch_size, # prevent CUDA memory exceeded
                                      sampler=train_sampler if (split == 'train') else DistributedSampler(dataset, shuffle=False, num_replicas=num_replicas, rank=rank),
@@ -42,24 +31,26 @@ def retrieve_individual_dataloaders(datasets, batch_size, num_workers = 4, rank=
                                      collate_fn=collate)
                         for split, dataset in datasets.items()}
 
-    return train_sampler, dataloaders
+    return dataloaders
 
-def create_dataset_args(train_cfg, project_root, **dataset_args):
-    dataset_args.setdefault("model", train_cfg.model_name)
-    dataset_args.setdefault("tv_fracs", {'train': 0.6, 'valid': 0.2})
-    dataset_args.setdefault("num_data", train_cfg.num_data)
-
-    if train_cfg.do_MMD:
+def create_dataset_args(project_root, 
+                        datadir, 
+                        do_MMD=False, 
+                        mixed_batch=False,
+                        **dataset_args):
+    
+    if mixed_batch:
         dataset_args.setdefault("is_target", [0, 1])
         dataset_args.setdefault("splits", ['train', 'valid'])
-        dataset_args.setdefault("datadir", [str(project_root / d) for d in train_cfg.datadir])
+        dataset_args.setdefault("datadir", [str(project_root / d) for d in datadir])
         dataset_args = [dataset_args]
     else:
         dataset_args = [deepcopy(dataset_args) for _ in range(2)]
         for i, da in enumerate(dataset_args):
             da.setdefault("is_target", i) 
-            da.setdefault("splits", ['train', 'valid'] if i==0 else ['valid'])
-            da.setdefault("datadir", str(project_root / train_cfg.datadir[i]))
+            da.setdefault("splits", ['train', 'valid'] if i==0 or do_MMD else ['valid'])
+            da.setdefault("datadir", str(project_root / datadir[i]))
+            
     return dataset_args
 
 def initialize_datasets(datadir='data', splits=['train', 'valid'], num_data=None, is_target=[0, 1], tv_fracs={'train': 0.6, 'valid': 0.2}, model='ParticleNet'):
@@ -141,7 +132,6 @@ def initialize_datasets(datadir='data', splits=['train', 'valid'], num_data=None
     ### ------ 5: Initialize datasets ------ ###
     # Now initialize datasets based upon loaded data
 
-    print('num_pts_per_file: ', num_pts_per_file)
     torch_datasets = {split: ConcatDataset([JetDataset(data, num_pts=num_pts_per_file[split][idx]) for idx, data in enumerate(datasets[split])]) for split in splits}
     torch_datasets = {split:Subset(dataset, torch.randperm(len(dataset))) for split, dataset in torch_datasets.items()}
 
