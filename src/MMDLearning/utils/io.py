@@ -31,21 +31,21 @@ def make_clean_dir(path):
         shutil.rmtree(path)   # remove the directory and all its contents
     os.makedirs(path) 
 
-def load_ckp(checkpoint_fpath, model, optimizer=None, device=torch.device('cpu'), target_model=False):
+def load_ckp(checkpoint_fpath, model, optimizer=None, device=torch.device('cpu'), use_target_model=False):
     checkpoint = torch.load(checkpoint_fpath, map_location=device, weights_only=True)
     print('initial load of model state dict...')
     incompat = model.load_state_dict(checkpoint['state_dict'], strict=False)
-    assert all('target_encoder' in k.split('.') for k in incompat.missing_keys), 'some non-target_encoder keys are missing: ' + str(incompat.missing_keys)
-    print("all keys present in loaded state except for target_encoder keys")     # expected: keys for target_* (new modules)
+    assert all('target_model' in k.split('.') for k in incompat.missing_keys), 'some non-target_model keys are missing: ' + str(incompat.missing_keys)
+    print("all keys present in loaded state except for target_model keys")     # expected: keys for target_* (new modules)
     assert len(incompat.unexpected_keys)==0, 'some unexpected keys in loaded state: ' + str(incompat.unexpected_keys)
     print("no unexpected keys in loaded state")  # expected: no unexpected
-    if target_model:
-        print('target_encoder detected, loading state dict for target_encoder from model state dict...')
-        incompat = model.module.target_encoder.load_state_dict(
+    if len(incompat.missing_keys) > 0 and use_target_model:
+        print('target_model detected but some parameters are not matched, copying state dict for target_model from model...')
+        incompat = model.module.target_model.load_state_dict(
             model.module.model.state_dict(), strict=False
         )
         assert len(incompat.missing_keys)==0, 'some keys are missing in loaded state: ' + str(incompat.missing_keys)
-        print("no missing keys in loaded state for target_encoder")  # expected: no missing
+        print("no missing keys in loaded state for target_model")  # expected: no missing
         assert all('classifier' in k.split('.') for k in incompat.unexpected_keys), 'some non-classifier keys are unexpected: ' + str(incompat.unexpected_keys)
         print("the only unexpected keys are for the classifier as expected.") #classifier weights will be unexpected
     if optimizer is not None:
@@ -82,7 +82,9 @@ def config_init(args, dist_info, project_root, pt_overwrite_keys=['datadir', 'mo
         args.exp_name = ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
     pt_args_overwrite = {}
     args.logdir = str(project_root / args.logdir)
-    args.target_encoder_groups = tuple(args.target_encoder_groups or [])
+    args.target_model_groups = tuple(args.target_model_groups or [])
+    for k in args.frozen_groups.keys():
+        args.frozen_groups[k] = tuple(args.frozen_groups[k])
     if args.pretrained != '':
         if '/' in args.pretrained:
             pt_exp = args.pretrained.split('/')[0]
@@ -93,6 +95,7 @@ def config_init(args, dist_info, project_root, pt_overwrite_keys=['datadir', 'mo
         pt_args_overwrite = {k: pt_args[k] for k in pt_overwrite_keys if k in pt_args}
     pt_args_overwrite['do_MMD'] = args.MMD_frac > 0
     cfg = TrainingConfig.from_args_and_dist(args, dist_info, pt_args_overwrite)
+    
     if (dist_info.rank == 0): # master
         make_clean_dir(f"{args.logdir}/{args.exp_name}")
         d = cfg.as_dict()

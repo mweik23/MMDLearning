@@ -82,7 +82,7 @@ class MMDPolicy(TrainingPolicy):
             else:
                 batch_output = {'Source': {'label': labels[0]}}
                 batch_output['Source']['pred'] = preds[0]
-                   
+            batch_output['Target'] = {}
         for k, v in taps['encoder'].items():
             batch_output[k]['encoder'] = v
 
@@ -163,7 +163,8 @@ class SourceTargetClassifier(TrainingPolicy):
         batch_output = {d: {'pred': pred, 'label': label} for d in state['track_domains']}
         
         if len(state['get_buffers']) > 0:
-            for_bufs = split_output(batch_output, n_s=prepared['n_s'])
+            for_bufs = split_output(batch_output[state['track_domains'][0]], n_s=prepared['n_s'])
+            
         for d in state['get_buffers']:
             self.bufs[d].add(
                 logit_diffs=for_bufs[d]['pred'][:, 1] - for_bufs[d]['pred'][:, 0],

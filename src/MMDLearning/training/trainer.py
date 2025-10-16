@@ -45,7 +45,7 @@ class Trainer:
     mode: str = 'qt_classifier'  # 'qt_classifier', 'st_classifier'
     lambda_adjust: LambdaAdjust = LambdaAdjust(1.0, 0.0)  # default no-op
     dtype: torch.dtype = torch.float32
-
+    mixed_batch: bool = False  # whether batches contain both source and target data
     def __post_init__(self):
         if self.mmd_sched is None:
             self.mmd_sched = lambda epoch: 1.0
@@ -61,7 +61,8 @@ class Trainer:
             EndFirstVal: self._end_first_val,
         }
         self.update_state(Initialization(bce_estimate=0.27, mmd_estimate=0.01)) #guess values
-        policy_kwargs = {'mmd_sched': self.mmd_sched, 'MMD_frac': self.cfg.MMD_frac}
+        if self.cfg.do_MMD:
+            policy_kwargs = {'mmd_sched': self.mmd_sched, 'MMD_frac': self.cfg.MMD_frac}
         self.scheduler = make_scheduler(self.optimizer, self.sched_config)
         self.buffers = {d: EpochLogitBuffer(keep_indices=False, 
                                             keep_domains=False, 
@@ -73,7 +74,6 @@ class Trainer:
                                   dtype=self.dtype,
                                   do_MMD=self.cfg.do_MMD,
                                   mode=self.mode,
-                                  target_model_groups=self.cfg.target_model_groups,
                                   **policy_kwargs)
         self.loader_names = ['primary_loader', 'secondary_loader']
 
@@ -128,7 +128,7 @@ class Trainer:
         if handler is not None:
             handler(event)
 
-    #TODO: configure for multi gpu training
+    #TODO: configure for multi gpu training. Currently not supported
     def get_mmd_floor(self, loader, quantiles=[0.5, 0.9]):
         print('>> getting MMD stats...')
         self.ddp_model.eval()
@@ -171,7 +171,8 @@ class Trainer:
 
             if (batch_idx+1) % self.cfg.log_interval == 0:
                 for d, tr in trackers.items():
-                    display_status(phase=self.state['phase'], domain=d, epoch=epoch, tot_epochs=self.final_epoch, #TODO: check if this gives correct tot_epochs
+                    display_status(phase=self.state['phase'], domain=d, epoch=epoch, 
+                                   tot_epochs=0 if self.state['phase']=='test' else self.final_epoch, #TODO: check if this gives correct tot_epochs
                                    batch_idx=batch_idx+1, num_batches=loader_length,
                                    running_bce=tr.running_bce, running_mmd=tr.running_mmd,
                                    running_acc=tr.running_acc, avg_batch_time=tr.avg_batch_time(),
@@ -210,7 +211,7 @@ class Trainer:
                 #TODO: change the way secondary loader is passed and conditions are checked
                 val_metrics, val_buffers = self._run_epoch(self.start_epoch-1, 
                                                            primary_loader=self.dataloaders[0]['valid'], 
-                                                           secondary_loader=self.dataloaders[1]['valid'] if self.cfg.twin_encoder and self.cfg.do_MMD else None)
+                                                           secondary_loader=self.dataloaders[1]['valid'] if (not self.mixed_batch and self.cfg.do_MMD) else None)
             #save logits and labels for validation
             #TODO: make saving more robust
             if val_buffers is not None:
@@ -249,6 +250,7 @@ class Trainer:
             is_best=False
             # lambda adjust setting
             #TODO: either update this for target_model or remove it
+            assert self.cfg.mmd_interval == -1, "Currently does not support lambda_adust so please set mmd_interval=-1"
             if self.cfg.mmd_interval != -1 and self.cfg.do_MMD:
                 if (epoch-self.start_epoch) % self.cfg.mmd_interval == 0:
                     with torch.no_grad():
@@ -266,7 +268,7 @@ class Trainer:
             #----------training------------
             train_metrics, _ = self._run_epoch(epoch, 
                                                primary_loader=self.dataloaders[0]['train'], 
-                                               secondary_loader=self.dataloaders[1]['train'] if self.cfg.twin_encoder and self.cfg.do_MMD else None)
+                                               secondary_loader=self.dataloaders[1]['train'] if (not self.mixed_batch and self.cfg.do_MMD) else None)
 
             self.metrics.append(
                     epochs = epoch,
@@ -286,7 +288,7 @@ class Trainer:
                 with torch.no_grad():
                     val_metrics, _ = self._run_epoch(epoch,
                                                      primary_loader=self.dataloaders[0]['valid'], 
-                                                     secondary_loader=self.dataloaders[1]['valid'] if self.cfg.twin_encoder and self.cfg.do_MMD else None)
+                                                     secondary_loader=self.dataloaders[1]['valid'] if (not self.mixed_batch and self.cfg.do_MMD) else None)
                 if self.cfg.pretrained =='' and epoch==self.start_epoch:
                     self.update_state(EndFirstVal(bce=val_metrics[self.state['track_domains'][0]]['BCE_loss'], mmd=val_metrics[self.state['track_domains'][0]]['MMD_loss']))
                     if self.cfg.do_MMD:
@@ -333,10 +335,11 @@ class Trainer:
         best_model = torch.load(f"{self.cfg.logdir}/{self.cfg.exp_name}/best-val-model.pt", map_location=self.device, weights_only=True)
         self.ddp_model.load_state_dict(best_model['state_dict'])
         self.update_state(TestEpochStart())
-        loaders = {self.loader_names[j]: dl['valid'] for j, dl in enumerate(self.dataloaders)}
         
         with torch.no_grad():
-            test_metrics, test_buffers = self._run_epoch(0, **loaders)
+            test_metrics, test_buffers = self._run_epoch(0, 
+                                                         primary_loader=self.dataloaders[0]['valid'], 
+                                                         secondary_loader=self.dataloaders[1]['valid'] if not self.mixed_batch else None)
     
         if test_buffers['Source'] is not None:
             assert test_buffers['Target'] is not None
@@ -344,6 +347,10 @@ class Trainer:
             # plot final logits
             make_logits_plt({k: v['logit_diffs'] for k, v in test_buffers.items()}, 
                             f"{self.cfg.logdir}/{self.cfg.exp_name}")
+            if self.state['track_domains'][0] == 'Mixed' and len(self.state['track_domains']):
+                test_buffers = {self.state['track_domains'][0]: 
+                    {k: torch.cat((test_buffers[self.state['get_buffers'][0]][k], test_buffers[self.state['get_buffers'][1]][k]), dim=0) 
+                     for k in test_buffers[self.state['get_buffers'][0]].keys()}}
             ax = None
             for d, buf in test_buffers.items():
                 metrics, ax = get_test_metrics(buf['labels'].numpy(), buf['logit_diffs'].numpy(), domain=d, ax=ax)

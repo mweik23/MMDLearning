@@ -10,27 +10,27 @@ echo "MASTER_ADDR="$MASTER_ADDR
 
 project=domain_adaptation
 group=MMDLearning
-job_type=MMD_Lite
+job_type=Source-Target_Lite
 
 model_name="ParticleNet-Lite"
-model_config="config_005.json"
-pretrained=supervised_Lite_py83_hw72_43163255
+model_config="config_001.json"
+pretrained=
 batch_size=1024
-mmd_frac=0.175
+mmd_frac=0
 mmd_turnon_epoch=3
 mmd_turnon_width=3
 num_data=-1
-epochs=15
-warmup_epochs=7
+epochs=20
+warmup_epochs=8
 log_interval=50
 patience=3
 threshold=5e-3
 reduce_factor=0.3
-start_lr=1e-6
-peak_lr=1e-5
-target_model_groups='backbone encoder'
-mode='qt_classifier'
-#frozen_groups="{'main': ['backbone', 'encoder'], 'target_model': ['backbone', 'encoder']}"
+start_lr=3e-4
+peak_lr=3e-3
+target_model_groups= #'backbone encoder'
+mode='st_classifier'
+frozen_groups='{}' #'{"main": ["backbone", "encoder"], "target_model": ["backbone", "encoder"]}'
 use_tar_labels= #--use_tar_labels
 
 ##########################
@@ -61,4 +61,4 @@ srun python -u scripts/train.py --exp_name ${exp_name} --model_name ${model_name
     --epochs ${epochs} --warmup_epochs ${warmup_epochs} --log_interval ${log_interval} \
     --start_lr ${start_lr} --peak_lr ${peak_lr} --patience ${patience} --reduce_factor ${reduce_factor} \
     --MMDturnon_epoch ${mmd_turnon_epoch} --MMDturnon_width ${mmd_turnon_width} --threshold ${threshold} --pretrained ${pretrained} \
-    --target_model_groups ${target_model_groups} ${use_tar_labels} --mode ${mode}
+    --target_model_groups ${target_model_groups} ${use_tar_labels} --mode ${mode} --frozen_groups "${frozen_groups}"

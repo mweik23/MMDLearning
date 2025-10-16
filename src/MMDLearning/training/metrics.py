@@ -19,10 +19,10 @@ def get_batch_metrics(batch, loss_fns, mmd_coef=1.0, use_tar_labels=False, domai
         domains = [domains]
     if 'mmd' in loss_fns:
         if use_tar_labels:
-            mmd_val = (loss_fns['mmd'](batch['Source']['encoded'][batch['Source']['label']==0], batch['Target']['encoded'][batch['Target']['label']==0]) 
-                    + loss_fns['mmd'](batch['Source']['encoded'][batch['Source']['label']==1], batch['Target']['encoded'][batch['Target']['label']==1]))/2
+            mmd_val = (loss_fns['mmd'](batch['Source']['encoder'][batch['Source']['label']==0], batch['Target']['encoder'][batch['Target']['label']==0]) 
+                    + loss_fns['mmd'](batch['Source']['encoder'][batch['Source']['label']==1], batch['Target']['encoder'][batch['Target']['label']==1]))/2
         else:
-            mmd_val = loss_fns['mmd'](batch['Source']['encoded'], batch['Target']['encoded'])
+            mmd_val = loss_fns['mmd'](batch['Source']['encoder'], batch['Target']['encoder'])
     else:
         mmd_val=None
     out = {d: {} for d in domains}

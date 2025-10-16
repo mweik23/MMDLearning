@@ -42,14 +42,15 @@ def main(argv=None):
     cfg = config_init(args, dist_info, PROJECT_ROOT)
 
     ### set random seed
-    torch.manual_seed(cfg.seed)#+ rank)
-    np.random.seed(cfg.seed)#+ rank)
-    
+    torch.manual_seed(cfg.seed) #+ rank)
+    np.random.seed(cfg.seed) #+ rank)
+
     #load data sets
+    mixed_batch = (cfg.do_MMD and 'backbone' not in cfg.target_model_groups) or cfg.mode == 'st_classifier'
     dataset_args = create_dataset_args(PROJECT_ROOT,
                                        datadir=cfg.datadir,
                                        do_MMD=cfg.do_MMD,
-                                       mixed_batch=(cfg.do_MMD and 'backbone' not in cfg.target_model_groups) or cfg.mode == 'st_classifier',
+                                       mixed_batch=mixed_batch,
                                        model=cfg.model_name,
                                        num_data=cfg.num_data,
                                        tv_fracs={'train': 0.6, 'valid': 0.2})
@@ -58,7 +59,7 @@ def main(argv=None):
     dataloaders = [
         retrieve_dataloaders(
             dsets,
-            2*cfg.batch_size if len(datasets)==1 else cfg.batch_size,
+            2*cfg.batch_size if len(datasets)==1 and cfg.mode=='qt_classifier' else cfg.batch_size,
             num_workers=dist_info.num_workers,
             rank=dist_info.rank,
             num_replicas=dist_info.world_size,
@@ -75,6 +76,7 @@ def main(argv=None):
     
     # get model with predictor wrapper  
     model = make_predictor(cfg.model_name,
+                           groups='all',
                            target_model_groups=cfg.target_model_groups,
                            input_dims=7, #TODO: get this from the dataset shape
                            num_classes=2,
@@ -86,7 +88,7 @@ def main(argv=None):
     model = model.to(device)
     
     param_groups = get_param_groups(model, model_config, peak_lr=cfg.peak_lr, target_model_groups=cfg.target_model_groups)
-    param_groups, train_groups = freeze_param_groups(param_groups, frozen_groups={'main': ()}) # no frozen groups for now TODO: add input arg
+    param_groups, train_groups = freeze_param_groups(param_groups, frozen_groups=cfg.frozen_groups) # no frozen groups for now TODO: add input arg
     
     metrics = MetricHistory()
     metrics.update(peak_lr_by_group={k: [g['lr'] for g in groups] for k, groups in param_groups.items()})
@@ -109,7 +111,7 @@ def main(argv=None):
                                ddp_model,
                                optimizer=optimizer if cfg.ld_optim_state else None,
                                device=device,
-                               target_model=len(cfg.target_model_groups)>0)
+                               use_target_model=len(cfg.target_model_groups)>0)
     else:
         start_epoch = 0
         
@@ -144,7 +146,8 @@ def main(argv=None):
         mmd_sched=mmd_sched,
         dataloaders=dataloaders,
         metrics=metrics,
-        mode=cfg.mode
+        mode=cfg.mode,
+        mixed_batch=mixed_batch
     )
     
     #for n,m in ddp_model.named_modules():

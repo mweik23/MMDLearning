@@ -1,4 +1,5 @@
 import argparse
+import json
 
 def build_parser():
     parser = argparse.ArgumentParser(description='Top tagging')
@@ -56,10 +57,12 @@ def build_parser():
                         help = 'Use target labels for MMD')
     parser.add_argument('--model_name', type=str, default='LorentzNet', metavar='N',
                         help='model name')
-    parser.add_argument('--target_encoder_groups', nargs='+', default=None, metavar='N',
-                        help='use a twin encoder for target data (ParticleNet only)')
+    parser.add_argument('--target_model_groups', nargs='+', default=None, metavar='N',
+                        help='use a separate model for target data for these groups (ParticleNet only)')
     parser.add_argument('--mode', type=str, default='qt_classifier', metavar='N',
                         help='mode of operation')
+    parser.add_argument('--frozen_groups', type=json.loads, default='{}', metavar='N',
+                        help='list of model groups to freeze')
     ############################################################                    
     parser.add_argument('--local_rank', type=int, default=0)
     
