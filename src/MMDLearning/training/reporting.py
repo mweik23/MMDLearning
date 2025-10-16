@@ -1,6 +1,8 @@
 from pathlib import Path
 import matplotlib.pyplot as plt
 import torch
+import numpy as np
+from scipy.stats import norm
 SRC_DIR = (Path(__file__).parents[1]).resolve()
 import sys
 sys.path.append(str(SRC_DIR))
@@ -99,12 +101,25 @@ def make_train_plt(train_metrics, path, pretrained=False, do_MMD=False, rename_m
     return None
 
 def make_logits_plt(logit_diffs, path, name='final'):
+    bins = np.histogram_bin_edges(np.concatenate(list(logit_diffs.values())), bins='auto')
+    xlims = get_xlims(logit_diffs)
     plt.figure()
     for d, l in logit_diffs.items():
-        plt.hist(l, bins=200, histtype='step', label=d, density=True)
+        plt.hist(l, bins=bins, histtype='step', label=d, density=True)
     plt.xlabel('logit difference')
-    plt.xlim([-10, 10])
+    plt.xlim(xlims)
     plt.legend(frameon=False)
     plt.savefig(f"{path}/logit_diff_{name}.pdf")
     plt.close()
     return None
+
+# set xlims assuming gaussian-like tails. Outliers will be cut off, but plot will be focused on the main distribution.
+def get_xlims(logit_diffs, z_lim=4, z_set=2):
+    quant_set = norm.cdf(z_set)
+    quants = np.array([1-quant_set, 0.5, quant_set])
+    vals = [np.quantile(v, quants) for v in logit_diffs.values()]
+    min_idx = np.argmin(np.array([v[0] for v in vals]))
+    max_idx = np.argmax(np.array([v[-1] for v in vals]))
+    xmin = vals[min_idx][0] - (z_lim/z_set) * (vals[min_idx][1]-vals[min_idx][0])
+    xmax = vals[max_idx][0] + (z_lim/z_set) * (vals[max_idx][-1]-vals[max_idx][0])
+    return [xmin, xmax]

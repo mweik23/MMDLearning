@@ -38,12 +38,15 @@ class ParticleNetPredictor(BasePredictor):
                  encoder_layer: str = 'encoder',
                  **model_kwargs):
         super().__init__()
+        print('creating main model with args:', model_kwargs)
         self.model = self._load_model(model_name, **model_kwargs)
-        self.groups = model_kwargs['groups']
+        self.groups = model_kwargs['cfg']['group_order'] if model_kwargs['groups']=='all' else model_kwargs['groups']
         self.tap_keys = model_kwargs.get('tap_keys', ())
         if len(target_model_groups)>0:
             target_kwargs = model_kwargs.copy()
             target_kwargs['groups'] = target_model_groups
+            print('target model groups:', target_model_groups)
+            print('all groups:', self.groups)
             self.joint = [group not in target_model_groups for group in self.groups]
             if self.joint[0]:
                 target_kwargs['input_dims'], target_kwargs['seen_fc'] = self.model.stages[
@@ -72,9 +75,9 @@ class ParticleNetPredictor(BasePredictor):
     def add_runner(self, groups, curr_joint, seen_encoder):
         if len(groups) > 0:
             if curr_joint:
-                self.pipeline.append(JointRunner(tuple(groups), tap_keys=(k for k in self.tap_keys if k in groups), after_encoder=seen_encoder))   
+                self.pipeline.append(JointRunner(tuple(groups), tap_keys=tuple((k for k in self.tap_keys if k in groups)), after_encoder=seen_encoder))   
             else:
-                self.pipeline.append(SplitRunner(tuple(groups), tap_keys=(k for k in self.tap_keys if k in groups), after_encoder=seen_encoder))
+                self.pipeline.append(SplitRunner(tuple(groups), tap_keys=tuple((k for k in self.tap_keys if k in groups)), after_encoder=seen_encoder))
 
     @property
     def stages(self):
@@ -110,8 +113,8 @@ class ParticleNetPredictor(BasePredictor):
 
     def forward(self, x, x_sec=None, domains=('Source', 'Target'), target_preds=False, **kw):
         taps={}
+        split_output = False
         if self.pipeline is None:
-            split_output = False
             if x is not None and x_sec is not None:
                 split_output=True
                 x = merge_st(x, x_sec, ns=x['n_s'] or len(x['is_signal']))
@@ -201,6 +204,7 @@ class JointRunner(torch.nn.Module):
         self.names = names
         self.tap_keys = tap_keys
         self.after_encoder = after_encoder
+
     def forward(self, x_prim, x_sec=None, owner=None, taps=None, target_preds=False, domains=('Source', 'Target')):  # mask can be None for single-domain
         if self.after_encoder and not target_preds:
             if len(domains)==2 and x_sec is None:
