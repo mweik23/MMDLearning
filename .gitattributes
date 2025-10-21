@@ -1,0 +1,4 @@
+__pycache__/** merge=ours
+*.pyc            merge=ours
+*.pyo            merge=ours
+*.pyd            merge=ours
