@@ -65,8 +65,8 @@ class Trainer:
             policy_kwargs = {'mmd_sched': self.mmd_sched, 'MMD_frac': self.cfg.MMD_frac}
         self.scheduler = make_scheduler(self.optimizer, self.sched_config)
         self.buffers = {d: EpochLogitBuffer(keep_indices=False, 
-                                            keep_domains=False, 
-                                            assume_equal_lengths=True) for d in self.is_target.keys()
+                                            keep_domains=self.mixed_batch,
+                                            assume_equal_lengths=True) for d in self.state['all_domains']
                         }
         self.policy = make_policy(loss_fns=self.loss_fns, 
                                   bufs=self.buffers, 
@@ -89,30 +89,35 @@ class Trainer:
                 except OSError:
                     time.sleep(5)
     
+    def _update_mmd_norm(self, bce, mmd):
+        self.metrics.update(init_loss={'BCE': bce, 'MMD': mmd}) #guess values
+        self.state['mmd_norm'] = self.metrics.mmd_norm
+        
     def _initialize(self, event):
+        self.state['get_buffers'] = False
         if self.cfg.do_MMD:
-            self.metrics.update(init_loss={'BCE': event.bce_estimate, 'MMD': event.mmd_estimate}) #guess values
-            self.state['mmd_norm'] = self.metrics.mmd_norm
+            self._update_mmd_norm(event.bce_estimate, event.mmd_estimate)
             self.state['use_tar_labels'] = self.cfg.use_tar_labels
         if self.mode == 'st_classifier':
             self.state['track_domains'] = ['Mixed']
         elif self.mode == 'qt_classifier':
             self.state['track_domains'] = ['Source']
         self.state['epochs_completed'] = -1
+        self.state['all_domains'] = ['Mixed'] if self.mixed_batch else ['Source', 'Target']
 
     def _start_train_epoch(self, event):
         self.state['phase'] = 'train'
-        self.state['get_buffers'] = []
+        self.state['get_buffers'] = False
         self.state['epochs_completed'] += 1
         
     def _start_valid_epoch(self, event):
         self.state['phase'] = 'valid'
         if self.state['epochs_completed'] == -1:
-            self.state['get_buffers'] = ['Source', 'Target'] if (self.cfg.do_MMD or self.mode=='st_classifier') else []
+            self.state['get_buffers'] = True if (self.cfg.do_MMD or self.mode=='st_classifier') else False
             
     def _start_test_epoch(self, event):
         self.state['phase'] = 'test'
-        self.state['get_buffers'] = ['Source', 'Target']
+        self.state['get_buffers'] = True
         if self.mode == 'st_classifier':
             self.state['track_domains'] = ['Mixed']
         elif self.mode == 'qt_classifier':
@@ -120,7 +125,7 @@ class Trainer:
         
     def _end_first_val(self, event):
         if self.cfg.do_MMD:
-            self.metrics.update(init_loss={'BCE': event.bce, 'MMD': event.mmd/self.metrics.mmd_norm/self.cfg.MMD_frac})
+            self._update_mmd_norm(event.bce, event.mmd/self.metrics.mmd_norm/self.cfg.MMD_frac)
             self.state['mmd_norm'] = self.metrics.mmd_norm
             
     def update_state(self, event):
@@ -172,7 +177,7 @@ class Trainer:
             if (batch_idx+1) % self.cfg.log_interval == 0:
                 for d, tr in trackers.items():
                     display_status(phase=self.state['phase'], domain=d, epoch=epoch, 
-                                   tot_epochs=0 if self.state['phase']=='test' else self.final_epoch, #TODO: check if this gives correct tot_epochs
+                                   tot_epochs=0 if self.state['phase']=='test' else self.final_epoch-1, #TODO: check if this gives correct tot_epochs
                                    batch_idx=batch_idx+1, num_batches=loader_length,
                                    running_bce=tr.running_bce, running_mmd=tr.running_mmd,
                                    running_acc=tr.running_acc, avg_batch_time=tr.avg_batch_time(),
@@ -194,14 +199,18 @@ class Trainer:
             metrics[d] = epoch_metrics_from_globals(g_bce_sum=g_bce, g_mmd_sum=g_mmd, g_correct=g_corr, g_count=g_cnt)
             metrics[d]['time'] = tr.epoch_time()
         #gather logits and labels if buffers are requested
-    
-        gathered_buffers = {d: self.buffers[d].gather_to_rank0(cast_fp16=False) for d in self.state['get_buffers']}
+        gathered_buffers = {d: self.buffers[d].gather_to_rank0(cast_fp16=False) if self.state['get_buffers'] else None for d in self.state['all_domains']}
+        # split mixed buffers into source and target if needed
+        if self.state['get_buffers'] and self.state['all_domains'][0]=='Mixed' \
+        and gathered_buffers[self.state['all_domains'][0]] is not None and self.mode=='qt_classifier':
+            gathered_buffers = {d: {k: arr[gathered_buffers[self.state['all_domains'][0]]['domains']==v] 
+                                    for k, arr in gathered_buffers[self.state['all_domains'][0]].items()}
+                                for d, v in self.is_target.items()}
         if self.buffers is not None:
             for buf in self.buffers.values():
                 buf.clear()
-        #TODO: save metrics and buffers - probably will do it outside _run_epoch
 
-        return metrics, gathered_buffers if len(self.state['get_buffers'])>0 else None
+        return metrics, gathered_buffers if self.state['get_buffers'] else None
 
     def train(self):
         if self.cfg.pretrained !='':
@@ -214,8 +223,9 @@ class Trainer:
                                                            secondary_loader=self.dataloaders[1]['valid'] if (not self.mixed_batch and self.cfg.do_MMD) else None)
             #save logits and labels for validation
             #TODO: make saving more robust
+            #TODO: decide about splitting mixed buffers for saving when using qt_classifier and mmd
             if val_buffers is not None:
-                if all(val_buffers[d] is not None for d in self.state['get_buffers']):
+                if all(buf is not None for buf in val_buffers.values()):
                     torch.save(val_buffers, f'{self.cfg.logdir}/{self.cfg.exp_name}/init_val_buffers.pt')
 
             self.metrics.append(
@@ -236,7 +246,7 @@ class Trainer:
             
             ## save best model (minimum BCE + MMD with the MMD_coef only - no epoch dependent coefs) 
             
-            display_epoch_summary(partition="validation", epoch=self.start_epoch-1, tot_epochs=self.final_epoch,
+            display_epoch_summary(partition="validation", epoch=self.start_epoch-1, tot_epochs=self.final_epoch-1,
                             bce=self.metrics.get("val_BCE")[-1], mmd=self.metrics.get("val_MMD")[-1], acc=self.metrics.get("val_acc")[-1], time_s=self.metrics.get("val_time")[-1],
                             logger=getattr(self, "logger", None))
         else:
@@ -279,7 +289,7 @@ class Trainer:
                     train_time = train_metrics[self.state['track_domains'][0]]['time'],
                     classifier_lr = [g['lr'] for g in self.optimizer.param_groups if g['name']=='classifier'][0]
                 )
-            display_epoch_summary(partition="train", epoch=epoch, tot_epochs=self.final_epoch,
+            display_epoch_summary(partition="train", epoch=epoch, tot_epochs=self.final_epoch-1,
                             bce=self.metrics.get("train_BCE")[-1], mmd=self.metrics.get("train_MMD")[-1], acc=self.metrics.get("train_acc")[-1], time_s=self.metrics.get("train_time")[-1],
                             logger=getattr(self, "logger", None))
             #----------validation------------
@@ -315,7 +325,7 @@ class Trainer:
                 with open(f"{self.cfg.logdir}/{self.cfg.exp_name}/train-result.json", "w") as outfile:
                     outfile.write(json_object)
                         
-                display_epoch_summary(partition="validation", epoch=epoch, tot_epochs=self.final_epoch,
+                display_epoch_summary(partition="validation", epoch=epoch, tot_epochs=self.final_epoch-1,
                             bce=self.metrics.get("val_BCE")[-1], mmd=self.metrics.get("val_MMD")[-1], acc=self.metrics.get("val_acc")[-1],
                             time_s=self.metrics.get("val_time")[-1], best_epoch=self.metrics.get('best_epoch'),
                             best_val=self.metrics.get('best_val'), logger=getattr(self, "logger", None))
@@ -341,16 +351,13 @@ class Trainer:
                                                          primary_loader=self.dataloaders[0]['valid'], 
                                                          secondary_loader=self.dataloaders[1]['valid'] if not self.mixed_batch else None)
     
-        if test_buffers['Source'] is not None:
-            assert test_buffers['Target'] is not None
+        #print(f'rank: {self.dist_info.rank}, test_buffers: {test_buffers}')
+        if all(buf is not None for buf in test_buffers.values()):
             torch.save(test_buffers, f'{self.cfg.logdir}/{self.cfg.exp_name}/best_val_buffers.pt')
             # plot final logits
-            make_logits_plt({k: v['logit_diffs'] for k, v in test_buffers.items()}, 
-                            f"{self.cfg.logdir}/{self.cfg.exp_name}")
-            if self.state['track_domains'][0] == 'Mixed' and len(self.state['track_domains']):
-                test_buffers = {self.state['track_domains'][0]: 
-                    {k: torch.cat((test_buffers[self.state['get_buffers'][0]][k], test_buffers[self.state['get_buffers'][1]][k]), dim=0) 
-                     for k in test_buffers[self.state['get_buffers'][0]].keys()}}
+            make_logits_plt({k: v['logit_diffs'] for k, v in test_buffers.items()},
+                            f"{self.cfg.logdir}/{self.cfg.exp_name}", 
+                            domains={k: v['domains'] for k, v in test_buffers.items()} if self.mode=='st_classifier' else None)
             ax = None
             for d, buf in test_buffers.items():
                 metrics, ax = get_test_metrics(buf['labels'].numpy(), buf['logit_diffs'].numpy(), domain=d, ax=ax)
@@ -358,18 +365,20 @@ class Trainer:
             finish_roc_plot(f"{self.cfg.logdir}/{self.cfg.exp_name}", ax, is_primary=self.dist_info.is_primary)
 
         if os.path.exists(f'{self.cfg.logdir}/{self.cfg.exp_name}/init_val_buffers.pt'):
-            #load initial validation buffers
-            init_val_buffers = torch.load(f'{self.cfg.logdir}/{self.cfg.exp_name}/init_val_buffers.pt', weights_only=True)
             # plot initial logits
             if self.dist_info.is_primary:
+                #load initial validation buffers
+                init_val_buffers = torch.load(f'{self.cfg.logdir}/{self.cfg.exp_name}/init_val_buffers.pt', weights_only=True)
                 make_logits_plt({k: v['logit_diffs'] for k, v in init_val_buffers.items()},
-                                f"{self.cfg.logdir}/{self.cfg.exp_name}", name='initial')
+                                f"{self.cfg.logdir}/{self.cfg.exp_name}", name='initial',
+                                domains={k: v['domains'] for k, v in init_val_buffers.items()} if self.mode=='st_classifier' else None)
 
         for domain, met in test_metrics.items():
-            display_epoch_summary(partition="test", epoch=1, tot_epochs=1,
-                            bce=met['BCE_loss'], mmd=met['MMD_loss'], acc=met['acc'], time_s=met['time'],
-                            logger=getattr(self, "logger", None), domain=domain, auc=met['auc'], r30=met['1/eB ~ 0.3'])
-            
-            json_object = json.dumps(test_metrics, indent=4)
-            with open(f"{self.cfg.logdir}/{self.cfg.exp_name}/test-result.json", "w") as outfile:
-                outfile.write(json_object)
+            display_epoch_summary(partition="test", epoch=1, tot_epochs=0,
+                            bce=met.get('BCE_loss', None), mmd=met.get('MMD_loss', None), acc=met.get('acc', None), time_s=met.get('time', None),
+                            logger=getattr(self, "logger", None), domain=domain, auc=met.get('auc', None), r30=met.get('1/eB ~ 0.3', None))
+
+            if self.dist_info.is_primary:
+                json_object = json.dumps(test_metrics, indent=4)
+                with open(f"{self.cfg.logdir}/{self.cfg.exp_name}/test-result.json", "w") as outfile:
+                    outfile.write(json_object)

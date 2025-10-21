@@ -23,23 +23,29 @@ class SupervisedPolicy(TrainingPolicy):
     bufs: Dict[str, EpochLogitBuffer]
     device: torch.device
     dtype: torch.dtype
-
+    #TODO: refactor based on new buffer logic
     def compute_batch_metrics(self, *, data, model, state=None):
         #prepare the batch
         prepared = [model.module.prepare_batch(d, self.device, self.dtype) for d in data if d is not None]
+        if len(prepared)==1:
+            assert len(state['track_domains'])==1, "If one batch is provided, only one track_domain should be specified"
+        elif len(prepared)==2:
+            assert list(state['track_domains']) == ['Source', 'Target'], f"all_domains {state['track_domains']} do not match expected domains ['Source', 'Target']"
 
-        preds, _ = model(*prepared, domains=state['track_domains'], target_preds=state['phase']=='test')
+        preds, _ = model(*prepared, domains=tuple(state['track_domains']), target_preds=state['phase']=='test')
 
         #get labels and masks
         labels = [p['is_signal'].to(self.device, self.dtype).long() for p in prepared]
 
-        batch_output = {d: {'pred': pred, 'label': label} for d, pred, label in zip(state['track_domains'], preds, labels)}
+        batch_output = {d: {'pred': preds[i], 'label': labels[i]} for i, d in enumerate(state['track_domains'])}
 
-        for d in state['get_buffers']:
-            self.bufs[d].add(
-                logit_diffs=batch_output[d]['pred'][:, 1] - batch_output[d]['pred'][:, 0],
-                labels=batch_output[d]['label']
-            )
+        if state['get_buffers']:
+            for d in state['all_domains']:
+                assert d in self.bufs.keys(), f"buffer for domain {d} not found in bufs"
+                self.bufs[d].add(
+                    logit_diffs=batch_output[d]['pred'][:, 1] - batch_output[d]['pred'][:, 0],
+                    labels=batch_output[d]['label']
+                )
 
         #calculate losses and metrics
         batch_metrics = get_batch_metrics(batch_output, self.loss_fns, domains=state['track_domains'])
@@ -57,40 +63,43 @@ class MMDPolicy(TrainingPolicy):
     mmd_sched: Any  # MMDScheduler
     MMD_frac: float
 
+    #TODO: refactor based on new buffer logic
     def compute_batch_metrics(self, *, data, model, state=None):
         #prepare the batch
         prepared = [model.module.prepare_batch(d, self.device, self.dtype) for d in data if d is not None]
-        target_preds = 'Target' in state['track_domains'] or 'Target' in state['get_buffers']
+        target_preds = 'Target' in state['track_domains'] or state['get_buffers']
         preds, taps = model(*prepared, domains=('Source', 'Target'), target_preds=target_preds)
 
         #get labels and masks
         labels = [p['is_signal'].to(self.device, self.dtype).long() for p in prepared]
-        if target_preds:
-            if len(prepared)==1:
-                assert preds[0] is not None, "If one batch is provided, preds[0] must not be None"
-                #slice batch tensors by domain
-                batch_output = split_output({'pred': preds[0], 'label': labels[0]}, n_s=prepared[0]['n_s'])
-            else:
-                assert preds[0] is not None and preds[1] is not None, "If two batches are provided, neither preds[0] nor preds[1] can be None"
-                batch_output = {d: {'pred': pred, 'label': label} for d, pred, label in zip(('Source', 'Target'), preds, labels)}
-        
+        if len(prepared)==1:
+            assert preds[0] is not None, "If one batch is provided, preds[0] must not be None"
+            if state['get_buffers']:
+                assert target_preds, "If buffers are requested target_preds must be True"
+                #TODO: gotta decide whether all domains represents buffer domains or gathered buffer domains
+                for d in state['all_domains']:
+                    self.bufs[d].add(
+                        logit_diffs=preds[0][:, 1] - preds[0][:, 0],
+                        labels=labels[0],
+                        domains=prepared[0]['is_target']
+                    )
+            batch_output = split_output({'pred': preds[0], 'label': labels[0]}, n_s=prepared[0]['n_s'])
         else:
-            assert preds[0] is not None, "In training phase, preds[0] must not be None"
-            if len(prepared)==1:
-                batch_output = split_output({'label': labels[0]}, n_s=prepared[0]['n_s'])
-                batch_output['Source']['pred'] = preds[0]
-            else:
-                batch_output = {'Source': {'label': labels[0]}}
-                batch_output['Source']['pred'] = preds[0]
+            assert preds[0] is not None and preds[1] is not None, "If two batches are provided, neither preds[0] nor preds[1] can be None"
+            assert list(state['all_domains']) == ['Source', 'Target'], f"all_domains {state['all_domains']} do not match expected domains ['Source', 'Target']"
+            batch_output = {d: {'pred': pred, 'label': label} for d, pred, label in zip(state['all_domains'], preds, labels)}
+            if state['get_buffers']:
+                assert target_preds, "If buffers are requested target_preds must be True"
+                for d in state['all_domains']:
+                    self.bufs[d].add(
+                        logit_diffs=batch_output[d]['pred'][:, 1] - batch_output[d]['pred'][:, 0],
+                        labels=batch_output[d]['label']
+                    )
+        if not target_preds:
             batch_output['Target'] = {}
+        
         for k, v in taps['encoder'].items():
             batch_output[k]['encoder'] = v
-
-        for d in state['get_buffers']:
-            self.bufs[d].add(
-                logit_diffs=batch_output[d]['pred'][:, 1] - batch_output[d]['pred'][:, 0],
-                labels=batch_output[d]['label']
-            )
 
         #calculate losses and metrics
         batch_metrics = get_batch_metrics(batch_output, self.loss_fns, mmd_coef=self.MMD_frac*state['mmd_norm'], domains=state['track_domains'])
@@ -160,16 +169,17 @@ class SourceTargetClassifier(TrainingPolicy):
         #TODO: continue from here
         #get labels and masks
         label = prepared['is_target'].to(self.device, self.dtype).long()
-        batch_output = {d: {'pred': pred, 'label': label} for d in state['track_domains']}
-        
-        if len(state['get_buffers']) > 0:
-            for_bufs = split_output(batch_output[state['track_domains'][0]], n_s=prepared['n_s'])
-            
-        for d in state['get_buffers']:
-            self.bufs[d].add(
-                logit_diffs=for_bufs[d]['pred'][:, 1] - for_bufs[d]['pred'][:, 0],
-                labels=for_bufs[d]['label']
-            )
+
+        batch_output = {state['track_domains'][0]: {'pred': pred, 'label': label}}
+        assert list(batch_output.keys()) == state['all_domains'], f"all_domains {state['all_domains']} do not match batch output domains {list(batch_output.keys())}"
+
+        if state['get_buffers']:
+            for d, out in batch_output.items():
+                self.bufs[d].add(
+                    logit_diffs=out['pred'][:, 1] - out['pred'][:, 0],
+                    labels=out['label'],
+                    domains=out['label']
+                )
 
         #calculate losses and metrics
         batch_metrics = get_batch_metrics(batch_output, self.loss_fns, domains=state['track_domains'])

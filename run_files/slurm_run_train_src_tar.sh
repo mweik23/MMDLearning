@@ -14,13 +14,13 @@ job_type=Source-Target_Lite
 
 model_name="ParticleNet-Lite"
 model_config="config_001.json"
-pretrained=
-batch_size=1024
+pretrained=""
+batch_size=256
 mmd_frac=0
 mmd_turnon_epoch=3
 mmd_turnon_width=3
 num_data=-1
-epochs=20
+epochs=1
 warmup_epochs=8
 log_interval=50
 patience=3
@@ -28,7 +28,7 @@ threshold=5e-3
 reduce_factor=0.3
 start_lr=3e-4
 peak_lr=3e-3
-target_model_groups= #'backbone encoder'
+target_model_groups="" #'backbone encoder'
 mode='st_classifier'
 frozen_groups='{}' #'{"main": ["backbone", "encoder"], "target_model": ["backbone", "encoder"]}'
 use_tar_labels= #--use_tar_labels
@@ -56,9 +56,21 @@ conda activate ml
 
 exp_name="${job_type}_${source}_${target}_$SLURM_JOB_ID"
 
+#debug
+#------------------------------------
+#export NCCL_DEBUG=INFO
+#export NCCL_DEBUG_SUBSYS=INIT,COLL
+#export TORCH_DISTRIBUTED_DEBUG=DETAIL
+#export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
+#export TORCH_NCCL_BLOCKING_WAIT=1
+#------------------------------------
+
+export SLURM_CPU_BIND=cores
+export SLURM_HINT=nomultithread
+
 srun python -u scripts/train.py --exp_name ${exp_name} --model_name ${model_name} --model_config ${model_config} --batch_size ${batch_size} \
     --MMD_frac ${mmd_frac} --num_data ${num_data} --datadir ${source_dir} ${target_dir} \
     --epochs ${epochs} --warmup_epochs ${warmup_epochs} --log_interval ${log_interval} \
     --start_lr ${start_lr} --peak_lr ${peak_lr} --patience ${patience} --reduce_factor ${reduce_factor} \
-    --MMDturnon_epoch ${mmd_turnon_epoch} --MMDturnon_width ${mmd_turnon_width} --threshold ${threshold} --pretrained ${pretrained} \
-    --target_model_groups ${target_model_groups} ${use_tar_labels} --mode ${mode} --frozen_groups "${frozen_groups}"
+    --MMDturnon_epoch ${mmd_turnon_epoch} --MMDturnon_width ${mmd_turnon_width} --threshold ${threshold} \
+    ${use_tar_labels} --mode ${mode} --frozen_groups "${frozen_groups}"
