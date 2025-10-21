@@ -1,6 +1,12 @@
 import numpy as np
 import torch
 from torch import nn
+from pathlib import Path
+import sys
+SRC_path = Path(__file__).parents[1].resolve()
+sys.path.append(str(SRC_path))
+from utils.distributed import dist_global_variance_autograd, dist_global_variance_nograd
+from typing import Optional
 
 class RBF(nn.Module):
 
@@ -79,21 +85,27 @@ class LinearizedMMDLoss(nn.Module):
         #sample random frequencies
         omegas = sample_omegas(n_fourier, n_feat)  #shape (n_fourier, n_feat)
         self.register_buffer("omegas", omegas, persistent=True)
-
+        self.n_fourier = n_fourier
         #create bandwidth multipliers
-        multipliers = (mul_factor ** (torch.arange(n_kernels) - n_kernels // 2).float())
+        multipliers = torch.sqrt(mul_factor ** (torch.arange(n_kernels) - n_kernels // 2).float())
         self.register_buffer("bandwidth_multipliers", multipliers, persistent=True) 
         self.scale = scale
-        
-    def get_scale(self, L2_distances):
+
+    def get_scale(self, X, keep_grads=True):
         if self.scale is None:
-            n_samples = L2_distances.shape[0]
-            return L2_distances.sum() / (n_samples ** 2 - n_samples)
+            return dist_global_variance_autograd(X) if keep_grads else dist_global_variance_nograd(X)
         return self.scale
 
-    def forward(self, X, Y):
-        pass
-
+    def forward(self, X, Y, keep_grads=True):
+        sigma0 = torch.sqrt(self.get_scale(torch.vstack([X, Y]), keep_grads=keep_grads))
+        sigmas = sigma0*self.bandwidth_multipliers  #shape (n_kernels,)
+        src_counts = X.shape[0]
+        tgt_counts = Y.shape[0]
+        src_args = (self.omegas[None, None, :, :]*X[None, :,  None, :]).sum(dim=-1) / sigmas[:, None, None]  #shape (n_kernels, n_data, n_fourier)
+        tgt_args = (self.omegas[None, None, :, :]*Y[None, :,  None, :]).sum(dim=-1) / sigmas[:, None, None]  #shape (n_kernels, n_data, n_fourier)
+        src_projs = torch.cat([torch.cos(src_args).sum(dim=1), torch.sin(src_args).sum(dim=1)], dim=1) # 
+        tgt_projs = torch.cat([torch.cos(tgt_args).sum(dim=1), torch.sin(tgt_args).sum(dim=1)], dim=1)
+        
 def sample_omegas(n_fourier, n_feat, method='indep'):
     if method=='indep':
         return torch.normal(0, 1, size=(n_fourier, n_feat))

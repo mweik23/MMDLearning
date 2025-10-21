@@ -6,10 +6,7 @@ import sys
 import time 
 SRC_path = Path(__file__).parents[1].resolve() / 'src' / 'MMDLearning'
 sys.path.append(str(SRC_path))
-from utils.distributed import (
-    dist_global_variance_autograd,
-    dist_global_variance_nograd,
-)
+from utils.distributed import dist_global_variance
 
 def init():
     # Pick backend based on availability; for GPUs use NCCL.
@@ -47,7 +44,7 @@ def main():
     x = torch.randn(N, D, dtype=torch.float32, device=dev, requires_grad=True)
 
     # ---- AUTOGRAD VERSION (GPU) ----
-    v_auto = dist_global_variance_autograd(x, unbiased=True)  # scalar
+    v_auto = dist_global_variance(x, unbiased=True, keep_grads=True)  # scalar
     loss = v_auto
     loss.backward()  # should populate x.grad and include cross-rank deps
 
@@ -68,7 +65,7 @@ def main():
 
     # ---- NOGRAD VERSION (GPU) ----
     with torch.no_grad():
-        v_eval = dist_global_variance_nograd(x.detach(), unbiased=True)
+        v_eval = dist_global_variance(x.detach(), unbiased=True, keep_grads=False)
         if rank == 0:
             print(f"[nograd]   var={float(v_eval):.6f}  ref={float(ref):.6f}")
         assert torch.allclose(v_eval, ref, atol=1e-6, rtol=1e-6)

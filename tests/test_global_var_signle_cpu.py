@@ -5,10 +5,8 @@ import sys
 SRC_path = Path(__file__).parents[1].resolve() / 'src' / 'MMDLearning'
 sys.path.append(str(SRC_path))
 
-from utils.distributed import (
-    dist_global_variance_autograd,
-    dist_global_variance_nograd,
-)
+from utils.distributed import dist_global_variance
+
 
 def main():
     torch.manual_seed(0)
@@ -16,8 +14,8 @@ def main():
     #print(x)
 
     # Our functions should work when dist is not initialized
-    v_auto = dist_global_variance_autograd(x, unbiased=True)
-    v_eval = dist_global_variance_nograd(x, unbiased=True)
+    v_auto = dist_global_variance(x, unbiased=True, keep_grads=True)
+    v_eval = dist_global_variance(x, unbiased=True, keep_grads=False)
 
     # Reference: per-feature unbiased var, then sum over features (scalar)
     ref = x.var(dim=0, unbiased=True).sum()

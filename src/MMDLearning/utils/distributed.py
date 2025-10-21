@@ -358,10 +358,32 @@ def maybe_convert_syncbn(model, device_type: str, world_size: int, process_group
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model, process_group=process_group)
     return model
 
-def dist_global_variance_autograd(x: torch.Tensor,
+def local_to_global_autograd(sum_local, sqsum_local, n_local):
+    if dist.is_initialized():
+        # Gather vectors with autograd preserved
+        gathered_vecs = dist_all_gather(sum_local)                  # list of [D]
+        sum_global = torch.stack(gathered_vecs, dim=0).sum(dim=0)   # [D]
+
+        # Pack scalars to gather once (shape [2])
+        scal_pack = torch.stack([sqsum_local, n_local], dim=0)      # [2]
+        gathered_scal = dist_all_gather(scal_pack)                  # list of [2]
+        scal_stack = torch.stack(gathered_scal, dim=0).sum(dim=0)   # [2]
+        sqsum_global, n_global = scal_stack[0], scal_stack[1]
+        return sum_global, sqsum_global, n_global
+    return sum_local, sqsum_local, n_local
+
+def local_to_global_nograd(sum_local, sqsum_local, n_local):
+    if dist.is_initialized():
+        dist.all_reduce(sum_local, op=dist.ReduceOp.SUM)
+        dist.all_reduce(sqsum_local, op=dist.ReduceOp.SUM)
+        dist.all_reduce(n_local, op=dist.ReduceOp.SUM)
+    return sum_local, sqsum_local, n_local
+        
+def dist_global_variance(x: torch.Tensor,
                                   mask: Optional[torch.Tensor] = None,
                                   unbiased: bool = True,
-                                  dtype: Optional[torch.dtype] = None) -> torch.Tensor:
+                                  dtype: Optional[torch.dtype] = None,
+                                  keep_grads: bool = True) -> torch.Tensor:
     """
     Global scalar variance Var(X) = (1/N) * sum_i ||x_i - mean||^2,
     where X are rows of x and the batch is sharded across ranks.
@@ -391,18 +413,10 @@ def dist_global_variance_autograd(x: torch.Tensor,
     sum_local = x.sum(dim=0)          # [D], contributes to global mean
     sqsum_local = (x * x).sum()       # scalar: sum_i ||x_i||^2
 
-    if dist.is_initialized():
-        # Gather vectors with autograd preserved
-        gathered_vecs = dist_all_gather(sum_local)                  # list of [D]
-        sum_global = torch.stack(gathered_vecs, dim=0).sum(dim=0)   # [D]
-
-        # Pack scalars to gather once (shape [2])
-        scal_pack = torch.stack([sqsum_local, n_local], dim=0)      # [2]
-        gathered_scal = dist_all_gather(scal_pack)                  # list of [2]
-        scal_stack = torch.stack(gathered_scal, dim=0).sum(dim=0)   # [2]
-        sqsum_global, n_global = scal_stack[0], scal_stack[1]
+    if keep_grads:
+        sum_global, sqsum_global, n_global = local_to_global_autograd(sum_local, sqsum_local, n_local)
     else:
-        sum_global, sqsum_global, n_global = sum_local, sqsum_local, n_local
+        sum_global, sqsum_global, n_global = local_to_global_nograd(sum_local, sqsum_local, n_local)
 
     mean = sum_global / n_global.clamp_min(1)
     mean_sqnorm = mean.pow(2).sum()                       # ||μ||^2
@@ -463,3 +477,5 @@ def dist_global_variance_nograd(x: torch.Tensor,
         var = var * (n_global / (n_global - 1).clamp_min(1))
 
     return var
+
+
