@@ -362,12 +362,12 @@ def local_to_global_autograd(sum_local, sqsum_local, n_local):
     if dist.is_initialized():
         # Gather vectors with autograd preserved
         gathered_vecs = dist_all_gather(sum_local)                  # list of [D]
-        sum_global = torch.stack(gathered_vecs, dim=0).sum(dim=0)   # [D]
+        sum_global = sum(gathered_vecs)   # [D]
 
         # Pack scalars to gather once (shape [2])
         scal_pack = torch.stack([sqsum_local, n_local], dim=0)      # [2]
         gathered_scal = dist_all_gather(scal_pack)                  # list of [2]
-        scal_stack = torch.stack(gathered_scal, dim=0).sum(dim=0)   # [2]
+        scal_stack = sum(gathered_scal)  # [2]
         sqsum_global, n_global = scal_stack[0], scal_stack[1]
         return sum_global, sqsum_global, n_global
     return sum_local, sqsum_local, n_local
