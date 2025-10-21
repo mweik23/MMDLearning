@@ -25,3 +25,10 @@ top_tagging_dset_Pnet__pycache__/
 *.egg-info/
 .ipynb_checkpoints/
 .cache/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+.ipynb_checkpoints/
+.cache/
