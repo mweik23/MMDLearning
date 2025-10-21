@@ -8,6 +8,7 @@ from typing import Optional, Dict, Any, Sequence
 import multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel
 import contextlib
+from torch.distributed.nn.functional import all_gather as dist_all_gather
 
 def is_dist() -> bool:
     return dist.is_available() and dist.is_initialized()
@@ -356,3 +357,109 @@ def maybe_convert_syncbn(model, device_type: str, world_size: int, process_group
             process_group = dist.group.WORLD
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model, process_group=process_group)
     return model
+
+def dist_global_variance_autograd(x: torch.Tensor,
+                                  mask: Optional[torch.Tensor] = None,
+                                  unbiased: bool = True,
+                                  dtype: Optional[torch.dtype] = None) -> torch.Tensor:
+    """
+    Global scalar variance Var(X) = (1/N) * sum_i ||x_i - mean||^2,
+    where X are rows of x and the batch is sharded across ranks.
+    Autograd-safe across ranks.
+
+    Args:
+        x: [N_local, D] model outputs (or features you want variance over)
+        mask: optional bool mask broadcastable to x marking valid rows
+        unbiased: if True apply Bessel correction N/(N-1)
+        dtype: compute dtype (defaults to float32 unless x is float64)
+
+    Returns:
+        scalar tensor: global variance summed over features and averaged over samples
+    """
+    if dtype is None:
+        dtype = torch.float32 if x.dtype in (torch.float16, torch.bfloat16) else x.dtype
+    x = x.to(dtype)
+
+    if mask is not None:
+        # row-wise mask (broadcast OK): zero out invalid rows
+        x = x.masked_fill(~mask, 0)
+        n_local = mask.reshape(x.shape[0], -1).any(dim=1).sum().to(dtype)  # count valid rows
+    else:
+        n_local = torch.tensor(x.shape[0], device=x.device, dtype=dtype)
+
+    # Local summaries (keep grads!)
+    sum_local = x.sum(dim=0)          # [D], contributes to global mean
+    sqsum_local = (x * x).sum()       # scalar: sum_i ||x_i||^2
+
+    if dist.is_initialized():
+        # Gather vectors with autograd preserved
+        gathered_vecs = dist_all_gather(sum_local)                  # list of [D]
+        sum_global = torch.stack(gathered_vecs, dim=0).sum(dim=0)   # [D]
+
+        # Pack scalars to gather once (shape [2])
+        scal_pack = torch.stack([sqsum_local, n_local], dim=0)      # [2]
+        gathered_scal = dist_all_gather(scal_pack)                  # list of [2]
+        scal_stack = torch.stack(gathered_scal, dim=0).sum(dim=0)   # [2]
+        sqsum_global, n_global = scal_stack[0], scal_stack[1]
+    else:
+        sum_global, sqsum_global, n_global = sum_local, sqsum_local, n_local
+
+    mean = sum_global / n_global.clamp_min(1)
+    mean_sqnorm = mean.pow(2).sum()                       # ||μ||^2
+    var = (sqsum_global / n_global.clamp_min(1)) - mean_sqnorm
+
+    if unbiased:
+        var = var * (n_global / (n_global - 1).clamp_min(1))
+
+    return var
+
+@torch.no_grad()
+def dist_global_variance_nograd(x: torch.Tensor,
+                                mask: Optional[torch.Tensor] = None,
+                                unbiased: bool = True,
+                                dtype: Optional[torch.dtype] = None) -> torch.Tensor:
+    """
+    Fast global scalar variance (avg squared L2 distance from the global mean),
+    aggregated across all ranks with all_reduce. No gradients.
+
+    Var(X) = (1/N) * sum_i ||x_i||^2 - || (1/N) * sum_i x_i ||^2
+
+    Args:
+        x: [N_local, D] tensor of per-sample features/outputs.
+        mask: optional boolean mask selecting valid rows (broadcastable).
+        unbiased: apply Bessel correction N/(N-1).
+        dtype: compute dtype (defaults to float32 unless x is float64).
+
+    Returns:
+        0-D tensor (scalar) with the global variance summed over features.
+    """
+    if dtype is None:
+        dtype = torch.float32 if x.dtype in (torch.float16, torch.bfloat16) else x.dtype
+    x = x.to(dtype)
+
+    if mask is not None:
+        # Treat mask as row-wise; invalid rows contribute zero and are not counted
+        x = x.masked_fill(~mask, 0)
+        n_local = mask.reshape(x.shape[0], -1).any(dim=1).sum().to(dtype)
+    else:
+        n_local = torch.tensor(x.shape[0], device=x.device, dtype=dtype)
+
+    # Local summaries
+    sum_local = x.sum(dim=0)          # [D]
+    sqsum_local = (x * x).sum()       # scalar
+
+    if dist.is_initialized():
+        dist.all_reduce(sum_local, op=dist.ReduceOp.SUM)
+        dist.all_reduce(sqsum_local, op=dist.ReduceOp.SUM)
+        dist.all_reduce(n_local, op=dist.ReduceOp.SUM)
+        sum_global, sqsum_global, n_global = sum_local, sqsum_local, n_local
+    else:
+        sum_global, sqsum_global, n_global = sum_local, sqsum_local, n_local
+
+    mean = sum_global / n_global.clamp_min(1)
+    var = (sqsum_global / n_global.clamp_min(1)) - (mean * mean).sum()
+
+    if unbiased:
+        var = var * (n_global / (n_global - 1).clamp_min(1))
+
+    return var

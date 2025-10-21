@@ -72,6 +72,33 @@ class MMDScheduler:
         else:
             print('MMD scheduler width is not allowed to be negative')
 
+class LinearizedMMDLoss(nn.Module):
+
+    def __init__(self, n_feat=32, n_fourier=500, n_kernels=5, mul_factor=2.0, scale=None):
+        super().__init__()
+        #sample random frequencies
+        omegas = sample_omegas(n_fourier, n_feat)  #shape (n_fourier, n_feat)
+        self.register_buffer("omegas", omegas, persistent=True)
+
+        #create bandwidth multipliers
+        multipliers = (mul_factor ** (torch.arange(n_kernels) - n_kernels // 2).float())
+        self.register_buffer("bandwidth_multipliers", multipliers, persistent=True) 
+        self.scale = scale
+        
+    def get_scale(self, L2_distances):
+        if self.scale is None:
+            n_samples = L2_distances.shape[0]
+            return L2_distances.sum() / (n_samples ** 2 - n_samples)
+        return self.scale
+
+    def forward(self, X, Y):
+        pass
+
+def sample_omegas(n_fourier, n_feat, method='indep'):
+    if method=='indep':
+        return torch.normal(0, 1, size=(n_fourier, n_feat))
+    elif method=='orthog':
+        pass
 
 if __name__=='__main__':
     mmd = MMDLoss()
