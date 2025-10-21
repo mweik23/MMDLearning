@@ -18,4 +18,10 @@ logs/qg/*
 our_data_Nobj15_Njets64000/
 our_data_Nobj30_Njets-1/
 our_data_Nobj30_Njets128000
-top_tagging_dset_Pnet
+top_tagging_dset_Pnet__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+.ipynb_checkpoints/
+.cache/
