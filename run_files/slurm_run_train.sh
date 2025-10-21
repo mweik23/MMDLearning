@@ -17,21 +17,22 @@ model_config="config_000.json"
 batch_size=1024
 mmd_frac=0.0
 num_data=-1
-epochs=40
+epochs=30
 warmup_epochs=10
+
 log_interval=50
 patience=3
-threshold=1e-2
+threshold=5e-3
 reduce_factor=0.3
 start_lr=5e-4
 peak_lr=5e-3
 
 ##########################
-#source=py83
-#target=hw72
+source=py83
+target=hw72
 ##########################
-source=hw72
-target=py83
+#source=hw72
+#target=py83
 ##########################
 
 source_dir=data/datasets_Pnet100_Njets-1/${source}

@@ -391,7 +391,7 @@ class GroupedParticleNet(nn.Module):
                  tap_keys=(),
                  groups='all',
                  **kwargs):
-        super(GroupedParticleNet, self).__init__(**kwargs)
+        super(GroupedParticleNet, self).__init__()
 
         self.use_fts_bn = use_fts_bn
 
@@ -404,7 +404,8 @@ class GroupedParticleNet(nn.Module):
             use_fts_bn = use_fts_bn,
             use_counts = use_counts,
             for_inference = for_inference,
-            num_classes = num_classes
+            num_classes = num_classes,
+            seen_fc = kwargs.get('seen_fc', False)
         )
         self.tap_keys = tap_keys
         

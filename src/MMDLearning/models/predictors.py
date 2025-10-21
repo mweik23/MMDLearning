@@ -120,20 +120,23 @@ class ParticleNetPredictor(BasePredictor):
                 x = merge_st(x, x_sec, ns=x['n_s'] or len(x['is_signal']))
                 x_sec = None
                 assert domains==('Source', 'Target'), "If both x and x_sec are provided, domains must be ('Source', 'Target')"
+                pred, tap_values = self.model(**x, tap_keys=self.tap_keys)
+                pred_sec = None
             elif x_sec is not None:
-                x = x_sec
-                x_sec = None
                 assert domains==('Target',), "If x is None and x_sec is not None, domains must be ('Target',)"
+                pred_sec, tap_values = self.model(**x_sec, tap_keys=self.tap_keys)
+                pred=None
+            else:
+                pred, tap_values = self.model(**x, tap_keys=self.tap_keys)
+                pred_sec = None
             if domains==('Source', 'Target') and not target_preds:
                 split_output = True
-            pred, tap_values = self.model(**x, tap_keys=self.tap_keys)
             
             for k, v in zip(self.tap_keys, tap_values):
                 v_spl = split_st(v)
                 taps[k] = {d: v_spl[0] if d == 'Source' else v_spl[1] for d in domains}
             if split_output:
-                pred = pred[:x['n_s']]
-                pred_sec = pred[x['n_s']:]
+                pred, pred_sec = pred[:x['n_s']], pred[x['n_s']:]
             elif domains==('Source',):
                 pred_sec = None
             elif domains==('Target',):

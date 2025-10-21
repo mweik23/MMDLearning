@@ -100,7 +100,10 @@ def make_train_plt(train_metrics, path, pretrained=False, do_MMD=False, rename_m
     plt.close(fig)
     return None
 
-def make_logits_plt(logit_diffs, path, name='final'):
+def make_logits_plt(logit_diffs, path, name='final', domains=None):
+    if domains is not None and list(logit_diffs.keys())==['Mixed']:
+        # split Mixed into Source and Target
+        logit_diffs = {'Source': logit_diffs['Mixed'][domains['Mixed']==0], 'Target': logit_diffs['Mixed'][domains['Mixed']==1]}   
     bins = np.histogram_bin_edges(np.concatenate(list(logit_diffs.values())), bins='auto')
     xlims = get_xlims(logit_diffs)
     plt.figure()

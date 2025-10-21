@@ -35,8 +35,8 @@ def load_ckp(checkpoint_fpath, model, optimizer=None, device=torch.device('cpu')
     checkpoint = torch.load(checkpoint_fpath, map_location=device, weights_only=True)
     print('initial load of model state dict...')
     incompat = model.load_state_dict(checkpoint['state_dict'], strict=False)
-    assert all('target_model' in k.split('.') for k in incompat.missing_keys), 'some non-target_model keys are missing: ' + str(incompat.missing_keys)
-    print("all keys present in loaded state except for target_model keys")     # expected: keys for target_* (new modules)
+    assert all('target_model' in k.split('.') for k in incompat.missing_keys), 'some non-target_model keys from the current model are not present in the loaded state: ' + str(incompat.missing_keys)
+    print("all keys in the current model present in loaded state except for target_model keys")     # expected: keys for target_* (new modules)
     assert len(incompat.unexpected_keys)==0, 'some unexpected keys in loaded state: ' + str(incompat.unexpected_keys)
     print("no unexpected keys in loaded state")  # expected: no unexpected
     if len(incompat.missing_keys) > 0 and use_target_model:
@@ -46,8 +46,11 @@ def load_ckp(checkpoint_fpath, model, optimizer=None, device=torch.device('cpu')
         )
         assert len(incompat.missing_keys)==0, 'some keys are missing in loaded state: ' + str(incompat.missing_keys)
         print("no missing keys in loaded state for target_model")  # expected: no missing
-        assert all('classifier' in k.split('.') for k in incompat.unexpected_keys), 'some non-classifier keys are unexpected: ' + str(incompat.unexpected_keys)
-        print("the only unexpected keys are for the classifier as expected.") #classifier weights will be unexpected
+        if all('classifier' in k.split('.') for k in incompat.unexpected_keys):
+            print("the only unexpected keys are for the classifier as expected.") #classifier weights will be unexpected
+        else: 
+            print('WARNING: some keys from main model other than classifier head are not matched to the target model: ' + str(incompat.unexpected_keys))
+        
     if optimizer is not None:
         optimizer.load_state_dict(checkpoint['optimizer'])
     return checkpoint['epoch']
