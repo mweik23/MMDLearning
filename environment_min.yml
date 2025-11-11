@@ -1,0 +1,19 @@
+name: ml
+channels:
+  - conda-forge
+dependencies:
+  - python=3.9
+  - numpy
+  - pandas
+  - jupyterlab
+  - matplotlib
+  - torchvision
+  - torchaudio
+  - cpuonly
+  - pytorch
+  - scikit-learn
+  - h5py
+  - geopandas
+  - tifffile
+  - opencv
+prefix: /Users/mitchweikert/miniforge3/envs/ml
