@@ -4,6 +4,8 @@ A machine learning training algorithm for classifying jets from collider physics
 ## Overview
 This project is a proof of concept of an unsupervised domain adaptation technique to optimize performance on a target domain where labels are not known a priori. The technique requires a source dataset where we do have labels that is expected to be similar to the target domain. The model is then trained with a loss that is made up of the binary cross entropy loss evaluated on the source domain and a maximum mean discrepency regularization term to constrain the model to use a latent representation in which both datasets follow the same distribution. With this setup, the source dataset can be more informative for classification of the target dataset.
 
+The algorithm was developed using the datasets simulated in [arxiv: 2312.11760](https://arxiv.org/abs/2312.11760) using pythia and herwig. For any particular run, one dataset is chosen to be source and one is chosen to be target. The labels are ignored for the target dataset during training to mimic the setup needed for deployment. The algorithm currently works with a modified version of ParticleNet (see: [arxiv:1902.08570](https://arxiv.org/abs/1902.08570)).
+
 
 ## Installation
 ### Prerequisites
