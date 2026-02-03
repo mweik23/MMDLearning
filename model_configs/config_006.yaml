@@ -1,0 +1,39 @@
+group_order:
+- backbone
+- encoder
+- classifier
+group_specs:
+  backbone: 
+    conv_params:
+    - 7
+    - [32, 32, 32]
+    fc_params: []
+    freeze_bn: false
+    optim_params:
+      lr: 1.0
+      weight_decay: 0.0001
+  encoder:
+    conv_params:
+    - 7
+    - [64, 64, 64]
+    fc_params:
+    - [64, 0.0]
+    - [32, 0.0]
+    freeze_bn: false
+    optim_params:
+      lr: 1.0
+      weight_decay: 0.0001
+  classifier:
+    conv_params: []
+    fc_params:
+    - [32, 0.07]
+    - [32, 0.07]
+    freeze_bn: false
+    optim_params:
+      lr: 1.0
+      weight_decay: 0.0001
+defaults:
+  lr: 0.001
+  weight_decay: 0.0001
+  activation: ReLU
+

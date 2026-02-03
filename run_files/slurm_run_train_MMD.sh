@@ -30,7 +30,6 @@ start_lr=1e-6
 peak_lr=1e-5
 target_model_groups='encoder'
 mode='qt_classifier'
-#frozen_groups="{'main': ['backbone', 'encoder'], 'target_model': ['backbone', 'encoder']}"
 use_tar_labels= #--use_tar_labels
 
 ##########################

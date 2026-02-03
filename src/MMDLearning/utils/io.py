@@ -5,8 +5,12 @@ import string
 import numpy as np
 import torch
 import shutil
+from typing import Any
 
 from dataclasses import dataclass, field
+
+import yaml
+from pathlib import Path
 
 def check_path(name, root='', suffix='', overwrite=False):
     parent_dir = root.split('/' + root.split('/')[-1])[0]
@@ -106,3 +110,10 @@ def config_init(args, dist_info, project_root, pt_overwrite_keys=['datadir', 'mo
             json.dump(d, f, indent=4)
             f.close()
     return cfg
+
+def load_yaml(path: Path) -> dict[str, Any]:
+    with path.open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    if not isinstance(data, dict):
+        raise ValueError(f"YAML root must be a mapping/dict: {path}")
+    return data

@@ -64,6 +64,7 @@ def build_parser():
     parser.add_argument('--frozen_groups', type=json.loads, default='{}', metavar='N',
                         help='list of model groups to freeze')
     ############################################################                    
-    parser.add_argument('--local_rank', type=int, default=0)
+    parser.add_argument('--local_rank', type=int, default=0,
+                        help='for compatibility with torch.distributed.launch')
     
     return parser

@@ -4,19 +4,18 @@ import argparse, json
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
-SRC_path = Path(__file__).parents[1].resolve() / 'src' / 'MMDLearning'
-import sys
-sys.path.append(str(SRC_path))
-from utils.distributed import setup_dist, DistInfo, wrap_like_ddp, maybe_convert_syncbn
-from utils.io import config_init, load_ckp
-from utils.cli import build_parser
-from utils.utils import MetricHistory
-from models.predictors import make_predictor
-from data.dataset_v2 import initialize_datasets, retrieve_dataloaders, create_dataset_args
-from utils.model_utils import print_stage_param_summary, get_param_groups, freeze_param_groups
-from training.schedulers import SchedConfig
-from training.losses import MMDLoss, MMDScheduler
-from training.trainer import Trainer
+
+from MMDLearning.training.losses import LinearizedMMDLoss
+from MMDLearning.utils.distributed import setup_dist, DistInfo, wrap_like_ddp, maybe_convert_syncbn
+from MMDLearning.utils.io import config_init, load_ckp, load_yaml
+from MMDLearning.utils.cli import build_parser
+from MMDLearning.utils.utils import MetricHistory
+from MMDLearning.models.predictors import make_predictor
+from MMDLearning.data.dataset_v2 import initialize_datasets, retrieve_dataloaders, create_dataset_args
+from MMDLearning.utils.model_utils import print_stage_param_summary, get_param_groups, freeze_param_groups
+from MMDLearning.training.schedulers import SchedConfig
+from MMDLearning.training.losses import MMDLoss, MMDScheduler
+from MMDLearning.training.trainer import Trainer
 import torch.distributed as dist
 
 PROJECT_ROOT = Path(__file__).parents[1].resolve()
@@ -33,7 +32,7 @@ def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
     #set up distributed training
-    dist_info: DistInfo = setup_dist(arg_num_workers=args.num_workers)
+    dist_info: DistInfo = setup_dist(arg_num_workers=args.num_workers) #TODO: need to update for compatibility with ml_tools.py
     if dist_info.is_primary:
         print(dist_info)
     device = torch.device(dist_info.device_type)
@@ -71,17 +70,17 @@ def main(argv=None):
     
     #load model config
     if cfg.model_config != '':
-        with open(PROJECT_ROOT / 'model_configs' / cfg.model_config, 'r') as f:
-            model_config = json.load(f)
+        model_config = load_yaml(PROJECT_ROOT / 'model_configs' / cfg.model_config)
     
-    # get model with predictor wrapper  
+    # get model with predictor wrapper 
+    encoder_layer = 'encoder'
     model = make_predictor(cfg.model_name,
                            groups='all',
                            target_model_groups=cfg.target_model_groups,
                            input_dims=7, #TODO: get this from the dataset shape
                            num_classes=2,
                            tap_keys=('encoder',) if cfg.do_MMD else (),
-                           encoder_layer='encoder',
+                           encoder_layer=encoder_layer,
                            cfg=model_config)
     
     model = maybe_convert_syncbn(model, dist_info.device_type, dist_info.world_size)
@@ -132,7 +131,9 @@ def main(argv=None):
     
     loss_fns = {'bce': nn.CrossEntropyLoss()}
     if cfg.do_MMD:
-        loss_fns['mmd'] = MMDLoss()
+        loss_fns['mmd'] = LinearizedMMDLoss(
+            n_latent=model_config.get(encoder_layer, {}).get('fc_params', [[32, 0]])[-1][0],
+        )
     
     trainer = Trainer(
         cfg=cfg,
@@ -157,7 +158,7 @@ def main(argv=None):
 
     trainer.test()
     
-    if dist_info.initialized:
+    if dist.is_available() and dist.is_initialized():
         dist.destroy_process_group()
         
     torch.cuda.empty_cache()

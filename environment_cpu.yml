@@ -1,5 +1,6 @@
 name: ml
 channels:
+  - pytorch
   - conda-forge
 dependencies:
   - python=3.9
@@ -13,7 +14,4 @@ dependencies:
   - pytorch
   - scikit-learn
   - h5py
-  - geopandas
-  - tifffile
-  - opencv
-prefix: /Users/mitchweikert/miniforge3/envs/ml
+  - pip

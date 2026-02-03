@@ -164,6 +164,7 @@ class Trainer:
         for batch_idx, data in pair_by_source_len(primary_loader, secondary_loader):
             if self.state['phase'] == 'train':
                 self.optimizer.zero_grad()
+            #TODO: make sure batch_metrics has the right structure
             batch_metrics, tot_loss = self.policy.compute_batch_metrics(data=data, 
                                                                   model=self.ddp_model, 
                                                                   state=self.state)
@@ -179,8 +180,8 @@ class Trainer:
                     display_status(phase=self.state['phase'], domain=d, epoch=epoch, 
                                    tot_epochs=0 if self.state['phase']=='test' else self.final_epoch-1, #TODO: check if this gives correct tot_epochs
                                    batch_idx=batch_idx+1, num_batches=loader_length,
-                                   running_bce=tr.running_bce, running_mmd=tr.running_mmd,
                                    running_acc=tr.running_acc, avg_batch_time=tr.avg_batch_time(),
+                                   running_bce=tr.running_bce, running_mmd=tr.running_mmd,
                                    logger=None)
     
         torch.cuda.empty_cache() #can put this in the batch loop to free memory at the end of each batch but it slows things down
@@ -189,14 +190,14 @@ class Trainer:
         metrics = {}
         device = next(self.ddp_model.module.parameters()).device
         for d, tr in trackers.items():
-            g_bce, g_mmd, g_corr, g_cnt = globalize_epoch_totals(
-                local_bce_sum=tr.epoch_bce_sum,
-                local_mmd_sum=tr.epoch_mmd_sum,
+            g_corr, g_cnt, g_bce, g_mmd, _ = globalize_epoch_totals(
                 local_correct=tr.epoch_correct,
                 local_count=tr.epoch_count,
                 device=device,
+                local_bce_sum=tr.epoch_bce_sum,
+                local_mmd_sum=tr.epoch_mmd_sum,
             )
-            metrics[d] = epoch_metrics_from_globals(g_bce_sum=g_bce, g_mmd_sum=g_mmd, g_correct=g_corr, g_count=g_cnt)
+            metrics[d] = epoch_metrics_from_globals(g_correct=g_corr, g_count=g_cnt, g_bce_sum=g_bce, g_mmd_sum=g_mmd)
             metrics[d]['time'] = tr.epoch_time()
         #gather logits and labels if buffers are requested
         gathered_buffers = {d: self.buffers[d].gather_to_rank0(cast_fp16=False) if self.state['get_buffers'] else None for d in self.state['all_domains']}
@@ -245,10 +246,11 @@ class Trainer:
             
             
             ## save best model (minimum BCE + MMD with the MMD_coef only - no epoch dependent coefs) 
-            
-            display_epoch_summary(partition="validation", epoch=self.start_epoch-1, tot_epochs=self.final_epoch-1,
-                            bce=self.metrics.get("val_BCE")[-1], mmd=self.metrics.get("val_MMD")[-1], acc=self.metrics.get("val_acc")[-1], time_s=self.metrics.get("val_time")[-1],
-                            logger=getattr(self, "logger", None))
+            if self.dist_info.is_primary:
+                display_epoch_summary(partition="validation", epoch=self.start_epoch-1, tot_epochs=self.final_epoch-1,
+                                acc=self.metrics.get("val_acc")[-1], time_s=self.metrics.get("val_time")[-1], 
+                                bce=self.metrics.get("val_BCE")[-1], mmd=self.metrics.get("val_MMD")[-1],
+                                logger=getattr(self, "logger", None))
         else:
             self.metrics.update(best_val=float('inf'), best_epoch=-1)
         ### training and validation
@@ -289,8 +291,10 @@ class Trainer:
                     train_time = train_metrics[self.state['track_domains'][0]]['time'],
                     classifier_lr = [g['lr'] for g in self.optimizer.param_groups if g['name']=='classifier'][0]
                 )
-            display_epoch_summary(partition="train", epoch=epoch, tot_epochs=self.final_epoch-1,
-                            bce=self.metrics.get("train_BCE")[-1], mmd=self.metrics.get("train_MMD")[-1], acc=self.metrics.get("train_acc")[-1], time_s=self.metrics.get("train_time")[-1],
+            if self.dist_info.is_primary:
+                display_epoch_summary(partition="train", epoch=epoch, tot_epochs=self.final_epoch-1,
+                            acc=self.metrics.get("train_acc")[-1], time_s=self.metrics.get("train_time")[-1],
+                            bce=self.metrics.get("train_BCE")[-1], mmd=self.metrics.get("train_MMD")[-1],
                             logger=getattr(self, "logger", None))
             #----------validation------------
             if epoch % self.cfg.val_interval == 0:
@@ -324,12 +328,12 @@ class Trainer:
                 json_object = json.dumps(self.metrics.to_dict(), indent=4)
                 with open(f"{self.cfg.logdir}/{self.cfg.exp_name}/train-result.json", "w") as outfile:
                     outfile.write(json_object)
-                        
-                display_epoch_summary(partition="validation", epoch=epoch, tot_epochs=self.final_epoch-1,
-                            bce=self.metrics.get("val_BCE")[-1], mmd=self.metrics.get("val_MMD")[-1], acc=self.metrics.get("val_acc")[-1],
-                            time_s=self.metrics.get("val_time")[-1], best_epoch=self.metrics.get('best_epoch'),
-                            best_val=self.metrics.get('best_val'), logger=getattr(self, "logger", None))
-
+                
+                if self.dist_info.is_primary:      
+                    display_epoch_summary(partition="validation", epoch=epoch, tot_epochs=self.final_epoch-1,
+                                bce=self.metrics.get("val_BCE")[-1], mmd=self.metrics.get("val_MMD")[-1], acc=self.metrics.get("val_acc")[-1],
+                                time_s=self.metrics.get("val_time")[-1], best_epoch=self.metrics.get('best_epoch'),
+                                best_val=self.metrics.get('best_val'), logger=getattr(self, "logger", None))
             self.scheduler.step_epoch(val_metric=val_loss)
             dist.barrier() # syncronize
         # keys needed: ['epochs', 'train_BCE', 'val_BCE'] if do_MMD: += ['train_MMD', 'val_MMD', 'train_loss', 'val_loss']
@@ -374,9 +378,10 @@ class Trainer:
                                 domains={k: v['domains'] for k, v in init_val_buffers.items()} if self.mode=='st_classifier' else None)
 
         for domain, met in test_metrics.items():
-            display_epoch_summary(partition="test", epoch=1, tot_epochs=0,
-                            bce=met.get('BCE_loss', None), mmd=met.get('MMD_loss', None), acc=met.get('acc', None), time_s=met.get('time', None),
-                            logger=getattr(self, "logger", None), domain=domain, auc=met.get('auc', None), r30=met.get('1/eB ~ 0.3', None))
+            if self.dist_info.is_primary:
+                display_epoch_summary(partition="test", epoch=1, tot_epochs=0,
+                                bce=met.get('BCE_loss', None), mmd=met.get('MMD_loss', None), acc=met.get('acc', None), time_s=met.get('time', None),
+                                logger=getattr(self, "logger", None), domain=domain, auc=met.get('auc', None), r30=met.get('1/eB ~ 0.3', None))
 
             if self.dist_info.is_primary:
                 json_object = json.dumps(test_metrics, indent=4)

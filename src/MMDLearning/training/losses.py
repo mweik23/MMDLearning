@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 from torch import nn
+from torch.nn import functional as F
 
 class RBF(nn.Module):
 
@@ -74,31 +75,65 @@ class MMDScheduler:
 
 class LinearizedMMDLoss(nn.Module):
 
-    def __init__(self, n_feat=32, n_fourier=500, n_kernels=5, mul_factor=2.0, scale=None):
+    def __init__(self, n_feat=500, n_latent=32, n_kernels=5, mul_factor=2.0, scale=None, beta_k=None, gamma=2):
         super().__init__()
         #sample random frequencies
-        omegas = sample_omegas(n_fourier, n_feat)  #shape (n_fourier, n_feat)
+        omegas = sample_omegas(n_feat, n_latent)  #shape (n_feat, n_latent)
+        self.n_feat = n_feat
         self.register_buffer("omegas", omegas, persistent=True)
 
-        #create bandwidth multipliers
-        multipliers = (mul_factor ** (torch.arange(n_kernels) - n_kernels // 2).float())
+        #create bandwidth multipliers (applied to sigma itself so sqrt of definition in RBF class)
+        multipliers = (mul_factor ** ((torch.arange(n_kernels) - n_kernels // 2) / 2).float())
         self.register_buffer("bandwidth_multipliers", multipliers, persistent=True) 
         self.scale = scale
-        
-    def get_scale(self, L2_distances):
+        self.beta_k = beta_k
+        self.gamma = gamma
+    def get_scale(self, X):
         if self.scale is None:
+            #--------TODO: perform reduction from other ranks if ddp--------
+            L2_distances = torch.cdist(X, X) ** 2
             n_samples = L2_distances.shape[0]
-            return L2_distances.sum() / (n_samples ** 2 - n_samples)
+            val = L2_distances.sum() / (n_samples ** 2 - n_samples)
+            return torch.sqrt(val.clamp_min(0))
+            #---------------------------------------------------------------
         return self.scale
+    
+    def get_features(self, X, scale):
+        proj = torch.einsum('ij, kj -> ik', X, self.omegas)[:, None, :] \
+            / (scale*self.bandwidth_multipliers[None, :, None])
+        feat = torch.cat(torch.sincos(proj), dim=-1)
+        return feat
+    
+    def get_mmd_per_kernel(self, X, Y):
+        X_size = X.shape[0]
+        Y_size = Y.shape[0]
+        scale = self.get_scale(torch.vstack([X, Y]))
+        if not torch.is_tensor(scale):  # user passed a float
+            scale = torch.as_tensor(scale, dtype=X.dtype, device=X.device)
+        feat_X = self.get_features(X, scale)  #shape (n_x, n_kernels, 2*n_feat)
+        feat_Y = self.get_features(Y, scale)  #shape (n_y, n_kernels, 2*n_feat)
+        #---------TODO: perform reduction from other ranks if ddp---------
+        sum_X = feat_X.sum(dim=0)  #shape (n_kernels, 2*n_feat)
+        sum_Y = feat_Y.sum(dim=0)  #shape (n_kernels, 2*n_feat)
+        #---------------------------------------------------------------
+        #these take the mean over features sum over trig
+        XX = ((sum_X * sum_X).sum(dim=-1) / self.n_feat - X_size) / (X_size * (X_size - 1))
+        YY = ((sum_Y * sum_Y).sum(dim=-1) / self.n_feat - Y_size) / (Y_size * (Y_size - 1))
+        XY = ((sum_X * sum_Y).sum(dim=-1) / self.n_feat) / (X_size * Y_size)
+        return XX - 2 * XY + YY  #shape (n_kernels,)
 
     def forward(self, X, Y):
-        pass
+        mmd_per_kernel = self.get_mmd_per_kernel(X, Y)  #shape (n_kernels,)
+        if self.beta_k is not None:
+            soft_plus = self.beta_k * F.softplus(mmd_per_kernel/self.beta_k)
+            return (soft_plus**self.gamma).sum()**(1/self.gamma)
+        return mmd_per_kernel.sum()
 
-def sample_omegas(n_fourier, n_feat, method='indep'):
+def sample_omegas(n_feat, n_latent, method='indep'):
     if method=='indep':
-        return torch.normal(0, 1, size=(n_fourier, n_feat))
+        return torch.normal(0, 1, size=(n_feat, n_latent))
     elif method=='orthog':
-        pass
+        raise NotImplementedError("Orthogonal omega sampling not implemented yet")
 
 if __name__=='__main__':
     mmd = MMDLoss()

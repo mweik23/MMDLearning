@@ -1,0 +1,18 @@
+name: ml
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - python=3.9
+  - numpy
+  - pandas
+  - jupyterlab
+  - matplotlib
+  - torchvision
+  - torchaudio
+  - pytorch
+  - pytorch-cuda=12.1
+  - scikit-learn
+  - h5py
+  - pip
