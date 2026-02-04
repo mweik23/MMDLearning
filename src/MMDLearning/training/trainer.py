@@ -190,12 +190,13 @@ class Trainer:
         metrics = {}
         device = next(self.ddp_model.module.parameters()).device
         for d, tr in trackers.items():
-            g_corr, g_cnt, g_bce, g_mmd, _ = globalize_epoch_totals(
-                local_correct=tr.epoch_correct,
-                local_count=tr.epoch_count,
-                device=device,
+            g_bce, g_mmd, g_corr, g_cnt = globalize_epoch_totals(
                 local_bce_sum=tr.epoch_bce_sum,
                 local_mmd_sum=tr.epoch_mmd_sum,
+                local_correct=tr.epoch_correct,
+                local_count=tr.epoch_count,
+                device=device
+                
             )
             metrics[d] = epoch_metrics_from_globals(g_correct=g_corr, g_count=g_cnt, g_bce_sum=g_bce, g_mmd_sum=g_mmd)
             metrics[d]['time'] = tr.epoch_time()

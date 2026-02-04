@@ -8,7 +8,7 @@ from typing import Optional, Dict, Any, Sequence
 import multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel
 import contextlib
-from torch.distributed.nn.functional import all_gather as dist_all_gather
+import torch.distributed.nn.functional as distF
 
 def is_dist() -> bool:
     return dist.is_available() and dist.is_initialized()
@@ -358,10 +358,12 @@ def maybe_convert_syncbn(model, device_type: str, world_size: int, process_group
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model, process_group=process_group)
     return model
 
-def dist_global_variance_autograd(x: torch.Tensor,
-                                  mask: Optional[torch.Tensor] = None,
-                                  unbiased: bool = True,
-                                  dtype: Optional[torch.dtype] = None) -> torch.Tensor:
+def dist_variance_autograd(
+    x: torch.Tensor,
+    mask: Optional[torch.Tensor] = None,
+    unbiased: bool = True,
+    dtype: Optional[torch.dtype] = None,
+) -> torch.Tensor:
     """
     Global scalar variance Var(X) = (1/N) * sum_i ||x_i - mean||^2,
     where X are rows of x and the batch is sharded across ranks.
@@ -380,41 +382,42 @@ def dist_global_variance_autograd(x: torch.Tensor,
         dtype = torch.float32 if x.dtype in (torch.float16, torch.bfloat16) else x.dtype
     x = x.to(dtype)
 
+    # Count valid rows (no need for grads on counts)
     if mask is not None:
-        # row-wise mask (broadcast OK): zero out invalid rows
+        # zero out invalid rows (keeps grads for valid entries)
         x = x.masked_fill(~mask, 0)
-        n_local = mask.reshape(x.shape[0], -1).any(dim=1).sum().to(dtype)  # count valid rows
+        valid_rows = mask.reshape(x.shape[0], -1).any(dim=1)
+        n_local = valid_rows.sum().to(dtype)
     else:
         n_local = torch.tensor(x.shape[0], device=x.device, dtype=dtype)
 
     # Local summaries (keep grads!)
-    sum_local = x.sum(dim=0)          # [D], contributes to global mean
-    sqsum_local = (x * x).sum()       # scalar: sum_i ||x_i||^2
+    sum_local = x.sum(dim=0)            # [D]
+    sqsum_local = (x * x).sum()         # scalar: sum_i ||x_i||^2
 
-    if dist.is_initialized():
-        # Gather vectors with autograd preserved
-        gathered_vecs = dist_all_gather(sum_local)                  # list of [D]
-        sum_global = torch.stack(gathered_vecs, dim=0).sum(dim=0)   # [D]
+    if is_dist():
+        # Autograd-aware SUM all-reduce
+        sum_global = distF.all_reduce(sum_local, op=dist.ReduceOp.SUM)      # [D]
+        sqsum_global = distF.all_reduce(sqsum_local, op=dist.ReduceOp.SUM)  # scalar
 
-        # Pack scalars to gather once (shape [2])
-        scal_pack = torch.stack([sqsum_local, n_local], dim=0)      # [2]
-        gathered_scal = dist_all_gather(scal_pack)                  # list of [2]
-        scal_stack = torch.stack(gathered_scal, dim=0).sum(dim=0)   # [2]
-        sqsum_global, n_global = scal_stack[0], scal_stack[1]
+        # Counts: gradient not needed; still fine to reduce via autograd-aware op,
+        # but we can detach to be explicit.
+        n_global = distF.all_reduce(n_local.detach(), op=dist.ReduceOp.SUM)  # scalar
     else:
         sum_global, sqsum_global, n_global = sum_local, sqsum_local, n_local
 
-    mean = sum_global / n_global.clamp_min(1)
-    mean_sqnorm = mean.pow(2).sum()                       # ||μ||^2
-    var = (sqsum_global / n_global.clamp_min(1)) - mean_sqnorm
+    n = n_global.clamp_min(1)
+    mean = sum_global / n
+    mean_sqnorm = (mean * mean).sum()               # ||μ||^2
+    var = (sqsum_global / n) - mean_sqnorm          # E||x||^2 - ||E x||^2
 
     if unbiased:
-        var = var * (n_global / (n_global - 1).clamp_min(1))
+        var = var * (n / (n - 1).clamp_min(1))
 
     return var
 
 @torch.no_grad()
-def dist_global_variance_nograd(x: torch.Tensor,
+def dist_variance_nograd(x: torch.Tensor,
                                 mask: Optional[torch.Tensor] = None,
                                 unbiased: bool = True,
                                 dtype: Optional[torch.dtype] = None) -> torch.Tensor:
@@ -448,7 +451,7 @@ def dist_global_variance_nograd(x: torch.Tensor,
     sum_local = x.sum(dim=0)          # [D]
     sqsum_local = (x * x).sum()       # scalar
 
-    if dist.is_initialized():
+    if is_dist():
         dist.all_reduce(sum_local, op=dist.ReduceOp.SUM)
         dist.all_reduce(sqsum_local, op=dist.ReduceOp.SUM)
         dist.all_reduce(n_local, op=dist.ReduceOp.SUM)
@@ -463,3 +466,21 @@ def dist_global_variance_nograd(x: torch.Tensor,
         var = var * (n_global / (n_global - 1).clamp_min(1))
 
     return var
+
+def allreduce_sum(x: torch.Tensor, grad: bool = True) -> torch.Tensor:
+    """In-place SUM all-reduce."""
+    if is_dist():
+        if grad:
+            distF.all_reduce(x, op=dist.ReduceOp.SUM)
+        else:
+            dist.all_reduce(x, op=dist.ReduceOp.SUM)
+    return x
+
+@torch.no_grad()
+def allreduce_sum_scalar(x: int, device) -> int:
+    """All-reduce an integer count (possibly different on each rank)."""
+    if is_dist():
+        t = torch.tensor([x], device=device, dtype=torch.long)
+        allreduce_sum(t, grad=False)
+        x = int(t.item())
+    return x

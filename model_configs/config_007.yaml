@@ -5,21 +5,21 @@ group_order:
 group_specs:
   backbone: 
     conv_params:
-    - 7
-    - [32, 32, 32]
-    fc_params: []
-    freeze_bn: false
+    - - 7
+      - [32, 32, 32]
+    fc_params: [] 
+    freeze_bn: true
     optim_params:
       lr: 1.0
       weight_decay: 0.0001
   encoder:
     conv_params:
-    - 7
-    - [64, 64, 64]
+    - - 7
+      - [64, 64, 64]
     fc_params:
     - [64, 0.0]
     - [32, 0.0]
-    freeze_bn: false
+    freeze_bn: true
     optim_params:
       lr: 1.0
       weight_decay: 0.0001

@@ -102,7 +102,13 @@ class MMDPolicy(TrainingPolicy):
             batch_output[k]['encoder'] = v
 
         #calculate losses and metrics
-        batch_metrics = get_batch_metrics(batch_output, self.loss_fns, mmd_coef=self.MMD_frac*state['mmd_norm'], domains=state['track_domains'])
+        batch_metrics = get_batch_metrics(
+            batch_output, 
+            self.loss_fns, 
+            mmd_coef=self.MMD_frac*state['mmd_norm'], 
+            domains=state['track_domains'], 
+            grad=state['phase']=='train'
+        )
 
         mmd_scale = self.mmd_sched(state['epochs_completed']) if state['phase']=='train' else 1
 

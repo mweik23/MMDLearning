@@ -2,6 +2,12 @@ import numpy as np
 import torch
 from torch import nn
 from torch.nn import functional as F
+from MMDLearning.utils.distributed import (
+    dist_variance_autograd, 
+    dist_variance_nograd, 
+    allreduce_sum, 
+    allreduce_sum_scalar
+)
 
 class RBF(nn.Module):
 
@@ -22,6 +28,7 @@ class RBF(nn.Module):
         # ensure buffer matches input
         mult = self.bandwidth_multipliers.to(dtype=X.dtype, device=X.device)
         bwidth = self.get_bandwidth(L2_distances)
+        #print('Computed Scale:', bwidth.item())
         if not torch.is_tensor(bwidth):  # user passed a float
             bwidth = torch.as_tensor(bwidth, dtype=X.dtype, device=X.device)
         res = torch.exp(-L2_distances[None, ...] / (bwidth * mult)[:, None, None])
@@ -88,33 +95,46 @@ class LinearizedMMDLoss(nn.Module):
         self.scale = scale
         self.beta_k = beta_k
         self.gamma = gamma
-    def get_scale(self, X):
+    def get_scale(self, X, grad=True, old_way=False):
         if self.scale is None:
-            #--------TODO: perform reduction from other ranks if ddp--------
-            L2_distances = torch.cdist(X, X) ** 2
-            n_samples = L2_distances.shape[0]
-            val = L2_distances.sum() / (n_samples ** 2 - n_samples)
+            #TODO: remove old_way when we have confirmed new way works well
+            if old_way:
+                L2_distances = torch.cdist(X, X) ** 2
+                n_samples = L2_distances.shape[0]
+                val = L2_distances.sum() / (n_samples ** 2 - n_samples)
+            else:
+                # note: this gives 1/2 of the L2 distance which is the correct value of sigma^2 of the gaussian
+                # defined by bwidth = 2 sigma^2
+                if grad:
+                    val = dist_variance_autograd(X, unbiased=True)
+                else:
+                    val = dist_variance_nograd(X, unbiased=True) 
+                #print('Computed scale:', val.item())
             return torch.sqrt(val.clamp_min(0))
-            #---------------------------------------------------------------
         return self.scale
     
     def get_features(self, X, scale):
         proj = torch.einsum('ij, kj -> ik', X, self.omegas)[:, None, :] \
             / (scale*self.bandwidth_multipliers[None, :, None])
-        feat = torch.cat(torch.sincos(proj), dim=-1)
+        feat = torch.cat((torch.sin(proj), torch.cos(proj)), dim=-1)
         return feat
     
-    def get_mmd_per_kernel(self, X, Y):
+    def get_mmd_per_kernel(self, X, Y, grad=True):
         X_size = X.shape[0]
         Y_size = Y.shape[0]
-        scale = self.get_scale(torch.vstack([X, Y]))
+        scale = self.get_scale(torch.vstack([X, Y]), grad=grad)
         if not torch.is_tensor(scale):  # user passed a float
             scale = torch.as_tensor(scale, dtype=X.dtype, device=X.device)
         feat_X = self.get_features(X, scale)  #shape (n_x, n_kernels, 2*n_feat)
         feat_Y = self.get_features(Y, scale)  #shape (n_y, n_kernels, 2*n_feat)
-        #---------TODO: perform reduction from other ranks if ddp---------
+        
         sum_X = feat_X.sum(dim=0)  #shape (n_kernels, 2*n_feat)
         sum_Y = feat_Y.sum(dim=0)  #shape (n_kernels, 2*n_feat)
+        
+        allreduce_sum(sum_X, grad=grad)
+        allreduce_sum(sum_Y, grad=grad)
+        X_size = allreduce_sum_scalar(X_size, device=X.device)
+        Y_size = allreduce_sum_scalar(Y_size, device=Y.device)
         #---------------------------------------------------------------
         #these take the mean over features sum over trig
         XX = ((sum_X * sum_X).sum(dim=-1) / self.n_feat - X_size) / (X_size * (X_size - 1))
@@ -122,8 +142,8 @@ class LinearizedMMDLoss(nn.Module):
         XY = ((sum_X * sum_Y).sum(dim=-1) / self.n_feat) / (X_size * Y_size)
         return XX - 2 * XY + YY  #shape (n_kernels,)
 
-    def forward(self, X, Y):
-        mmd_per_kernel = self.get_mmd_per_kernel(X, Y)  #shape (n_kernels,)
+    def forward(self, X, Y, grad=True):
+        mmd_per_kernel = self.get_mmd_per_kernel(X, Y, grad=grad)  #shape (n_kernels,)
         if self.beta_k is not None:
             soft_plus = self.beta_k * F.softplus(mmd_per_kernel/self.beta_k)
             return (soft_plus**self.gamma).sum()**(1/self.gamma)
