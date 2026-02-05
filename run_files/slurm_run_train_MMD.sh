@@ -13,7 +13,7 @@ group=MMDLearning
 job_type=MMD_Lite
 
 model_name="ParticleNet-Lite"
-model_config="config_005.json"
+model_config="config_007.yaml"
 pretrained=supervised_Lite_py83_hw72_43163255
 batch_size=1024
 mmd_frac=0.175
@@ -31,6 +31,7 @@ peak_lr=1e-5
 target_model_groups='encoder'
 mode='qt_classifier'
 use_tar_labels= #--use_tar_labels
+n_fourier_features=1024
 
 ##########################
 source=py83
@@ -60,4 +61,4 @@ srun python -u scripts/train.py --exp_name ${exp_name} --model_name ${model_name
     --epochs ${epochs} --warmup_epochs ${warmup_epochs} --log_interval ${log_interval} \
     --start_lr ${start_lr} --peak_lr ${peak_lr} --patience ${patience} --reduce_factor ${reduce_factor} \
     --MMDturnon_epoch ${mmd_turnon_epoch} --MMDturnon_width ${mmd_turnon_width} --threshold ${threshold} --pretrained ${pretrained} \
-    --target_model_groups ${target_model_groups} ${use_tar_labels} --mode ${mode}
+    --target_model_groups ${target_model_groups} ${use_tar_labels} --mode ${mode} --n_fourier_features ${n_fourier_features}

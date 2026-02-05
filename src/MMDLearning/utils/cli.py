@@ -63,6 +63,8 @@ def build_parser():
                         help='mode of operation')
     parser.add_argument('--frozen_groups', type=json.loads, default='{}', metavar='N',
                         help='list of model groups to freeze')
+    parser.add_argument('--n_fourier_features', type=int, default=1024, metavar='N',
+                        help='number of Fourier features for the model')
     ############################################################                    
     parser.add_argument('--local_rank', type=int, default=0,
                         help='for compatibility with torch.distributed.launch')

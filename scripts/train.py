@@ -133,6 +133,7 @@ def main(argv=None):
     if cfg.do_MMD:
         loss_fns['mmd'] = LinearizedMMDLoss(
             n_latent=model_config.get(encoder_layer, {}).get('fc_params', [[32, 0]])[-1][0],
+            n_feat=cfg.n_fourier_features
         )
     
     trainer = Trainer(
